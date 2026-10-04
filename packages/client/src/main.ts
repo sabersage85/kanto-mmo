@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { OverworldScene } from './scenes/OverworldScene.js';
 import { BattleScene } from './scenes/BattleScene.js';
+import { PvpBattleScene } from './scenes/PvpBattleScene.js';
 import { showAuthOverlay } from './ui/authOverlay.js';
 import { getStoredSession } from './net.js';
 
@@ -20,7 +21,7 @@ async function bootstrap(): Promise<void> {
     physics: {
       default: 'arcade',
     },
-    scene: [BattleScene],
+    scene: [BattleScene, PvpBattleScene],
   });
 
   // Added (rather than listed in `scene` above) so we can pass the session

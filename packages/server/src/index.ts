@@ -6,6 +6,7 @@ import colyseus from 'colyseus';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { OverworldRoom } from './rooms/OverworldRoom.js';
 import { BattleRoom } from './rooms/BattleRoom.js';
+import { PvpBattleRoom } from './rooms/PvpBattleRoom.js';
 import { loadMap } from './mapLoader.js';
 import { AuthError, login, register } from './auth/authService.js';
 
@@ -81,6 +82,7 @@ const gameServer = new Server({
 
 gameServer.define('overworld', OverworldRoom);
 gameServer.define('battle', BattleRoom);
+gameServer.define('pvpBattle', PvpBattleRoom);
 
 httpServer.listen(PORT, () => {
   // eslint-disable-next-line no-console

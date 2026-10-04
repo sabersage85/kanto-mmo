@@ -24,6 +24,8 @@ export interface PersistedPlayer {
   y: number;
   direction: Direction;
   party: CreatureInstance[];
+  wins: number;
+  losses: number;
 }
 
 /**
@@ -59,4 +61,7 @@ export interface PersistenceStore {
   loadPlayer(accountId: string): Promise<PersistedPlayer | null>;
   savePosition(accountId: string, mapId: string, x: number, y: number, direction: Direction): Promise<void>;
   saveParty(accountId: string, party: CreatureInstance[]): Promise<void>;
+
+  /** Atomically increments the account's win or loss counter (Milestone 4 PvP) and returns the updated tally. */
+  recordBattleResult(accountId: string, result: 'win' | 'loss'): Promise<{ wins: number; losses: number }>;
 }

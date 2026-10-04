@@ -98,6 +98,12 @@ export interface PlayerState {
   party: CreatureInstance[];
 }
 
+/** Lifetime PvP win/loss tally for a player, persisted via Milestone 3's store. */
+export interface BattleRecord {
+  wins: number;
+  losses: number;
+}
+
 export type Direction = 'up' | 'down' | 'left' | 'right';
 
 /** A single tile in a map's ground layer. */

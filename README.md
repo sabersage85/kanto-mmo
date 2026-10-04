@@ -19,11 +19,10 @@ a single-player cartridge game. Long term, the game will feature:
   original equivalent).
 - PvP battles and trading between players.
 
-This milestone builds on wild encounters/PvE battles with **persistence,
-accounts, and auth**: players now register/log in with an email + password,
-their trainer identity, party (creatures/levels/XP/moves), inventory, and
-last known position/map are durably saved, and reconnecting after a dropped
-connection resumes exactly where they left off.
+This milestone builds on persistence/accounts/auth with **PvP battles**:
+online players can challenge each other directly in the shared overworld,
+battle with their persisted party using the same turn-based engine as wild
+encounters, and have a durable win/loss record tracked on their account.
 
 ## Asset & Legal Policy
 
@@ -73,21 +72,25 @@ packages/
   server/   Authoritative Node.js game server, built on Colyseus. Hosts an
             OverworldRoom that tracks every connected player's position on
             a JSON-defined grid map, validates movement server-side, rolls
-            wild encounters on grass tiles, and broadcasts state to all
-            clients in real time. A BattleRoom resolves one-player-vs-one-
-            wild-creature PvE battles (turn order, damage, win/loss, XP
-            award). A Drizzle/PostgreSQL-backed persistence layer durably
-            stores accounts, sessions, and each player's party/position,
-            fronted by a write-through in-memory cache for low-latency
-            reads during gameplay. Also exposes a small Express HTTP API
-            (health check, map data fetch, /auth/register, /auth/login).
-            Has its own vitest suite.
+            wild encounters on grass tiles, handles PvP challenge requests/
+            responses, and broadcasts state to all clients in real time. A
+            BattleRoom resolves one-player-vs-one-wild-creature PvE battles
+            (turn order, damage, win/loss, XP award); a PvpBattleRoom
+            resolves two-human-controlled battles (turn order, damage,
+            win/loss, win/loss record persistence, turn timeout/forfeit). A
+            Drizzle/PostgreSQL-backed persistence layer durably stores
+            accounts, sessions, each player's party/position, and win/loss
+            record, fronted by a write-through in-memory cache for
+            low-latency reads during gameplay. Also exposes a small Express
+            HTTP API (health check, map data fetch, /auth/register,
+            /auth/login). Has its own vitest suite.
   client/   Phaser 3 + Vite web client. Shows a DOM login/register overlay
             before connecting, then connects to the Colyseus server,
             renders the map as colored tiles and each player as a colored
-            square, sends movement input from arrow keys / WASD, and shows
-            a placeholder-art BattleScene (HP bars, move buttons, battle
-            log) when an encounter is triggered.
+            square (clickable to send a PvP challenge), sends movement
+            input from arrow keys / WASD, and shows a placeholder-art
+            BattleScene (HP bars, move buttons, battle log) for wild
+            encounters or a PvpBattleScene for player-vs-player battles.
 ```
 
 ```mermaid
@@ -97,8 +100,12 @@ flowchart LR
     Z -- resolves with session token --> A[OverworldScene]
     A -- WS join w/ token --> B((Colyseus Room))
     A -- WS: encounterStart --> E[BattleScene]
+    A -- click player: challengeRequest --> B
+    A -- WS: pvpBattleStart --> P[PvpBattleScene]
     E -- WS join w/ token --> F((BattleRoom))
     E -- WS: selectMove / flee --> F
+    P -- WS join w/ token --> Q((PvpBattleRoom))
+    P -- WS: selectMove / forfeit --> Q
     A -- HTTP: GET /maps/:id --> C[Express]
   end
   subgraph Server [packages/server - Colyseus + Express]
@@ -106,8 +113,12 @@ flowchart LR
     B[OverworldRoom] -- onAuth: validateToken --> G
     B -- broadcasts state --> A
     B -- rolls encounter, issues token --> F
+    B -- matchMaker.createRoom on challenge accept --> Q
     F -- onAuth: validateToken --> G
     F -- broadcasts battle state --> E
+    Q -- onAuth: validateToken --> G
+    Q -- broadcasts battle state --> P
+    Q -- recordBattleResult on finish --> I
     C --> D[mapLoader.ts]
     B <-. write-through .-> I[sessionCache.ts]
     I <--> H
@@ -122,11 +133,14 @@ like, or how damage/XP/turn order is calculated — there is exactly one
 implementation of each formula, imported by both sides. The server never
 trusts a client-chosen wild species/level for a battle: `OverworldRoom`
 rolls the encounter and hands the client a single-use token that
-`BattleRoom` validates before building battle state. Likewise, neither room
-trusts a client-supplied identity: every join is authenticated via a
-server-issued session token (`onAuth` → `validateToken`), and the resulting
-`accountId` is the only identity used to load/save a player's party and
-position.
+`BattleRoom` validates before building battle state. For PvP, `OverworldRoom`
+itself creates the `PvpBattleRoom` via `matchMaker.createRoom` once both
+sides accept a challenge, specifying each side's exact account id — so a
+modified client can't fabricate a match or impersonate an opponent.
+Likewise, no room trusts a client-supplied identity: every join is
+authenticated via a server-issued session token (`onAuth` → `validateToken`),
+and the resulting `accountId` is the only identity used to load/save a
+player's party, position, and win/loss record.
 
 ### Tech stack
 
@@ -282,14 +296,28 @@ battle ends (win, loss, or a successful flee) you're returned to the
 overworld automatically. Winning awards XP and may level up your creature
 (which also fully heals it).
 
-### 7. Test reconnect / persistence
+### 7. Challenge another player to PvP
+
+With both tabs logged in as different accounts and visible in the same
+overworld, **click the other tab's colored player rectangle** to send a PvP
+challenge. The target sees an accept/decline prompt (auto-declines after 20
+seconds if ignored). On accept, both tabs transition into a PvP battle using
+each player's persisted party (first living creature — see
+[ROADMAP.md](./ROADMAP.md)'s Milestone 4 entry for why single-creature
+rather than full-party). Pick a move each turn; after you submit, your move
+buttons disable with a "waiting for opponent..." indicator until the
+opponent also submits (or 30 seconds pass and they auto-forfeit). On battle
+end, both tabs show the updated win/loss record and return to the
+overworld.
+
+### 8. Test reconnect / persistence
 
 Close the browser tab (or just reload it) after moving around and winning
 a battle, then reopen `http://localhost:5173`. The cached session token in
 `localStorage` lets you skip the login screen and resume at your last
-position with your current party XP/level intact. To force a fresh login,
-clear site data / local storage for `localhost:5173`, or use a private
-window.
+position with your current party XP/level and win/loss record intact. To
+force a fresh login, clear site data / local storage for
+`localhost:5173`, or use a private window.
 
 ### Environment variables (client)
 

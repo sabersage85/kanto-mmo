@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import type { CreatureInstance, Direction, StatBlock } from '@kanto-mmo/shared';
@@ -72,7 +72,7 @@ export class DrizzlePostgresStore implements PersistenceStore {
     });
     await this.insertParty(accountId, starterParty);
 
-    return { accountId, name, mapId: spawn.mapId, x: spawn.x, y: spawn.y, direction: spawn.direction, party: starterParty };
+    return { accountId, name, mapId: spawn.mapId, x: spawn.x, y: spawn.y, direction: spawn.direction, party: starterParty, wins: 0, losses: 0 };
   }
 
   async loadPlayer(accountId: string): Promise<PersistedPlayer | null> {
@@ -105,6 +105,8 @@ export class DrizzlePostgresStore implements PersistenceStore {
       y: playerRow.y,
       direction: playerRow.direction as Direction,
       party,
+      wins: playerRow.wins,
+      losses: playerRow.losses,
     };
   }
 
@@ -118,6 +120,22 @@ export class DrizzlePostgresStore implements PersistenceStore {
   async saveParty(accountId: string, party: CreatureInstance[]): Promise<void> {
     await this.db.delete(partyMembers).where(eq(partyMembers.accountId, accountId));
     await this.insertParty(accountId, party);
+  }
+
+  async recordBattleResult(accountId: string, result: 'win' | 'loss'): Promise<{ wins: number; losses: number }> {
+    const [row] =
+      result === 'win'
+        ? await this.db
+            .update(players)
+            .set({ wins: sql`${players.wins} + 1`, updatedAt: new Date() })
+            .where(eq(players.accountId, accountId))
+            .returning({ wins: players.wins, losses: players.losses })
+        : await this.db
+            .update(players)
+            .set({ losses: sql`${players.losses} + 1`, updatedAt: new Date() })
+            .where(eq(players.accountId, accountId))
+            .returning({ wins: players.wins, losses: players.losses });
+    return row ?? { wins: 0, losses: 0 };
   }
 
   private async insertParty(accountId: string, party: CreatureInstance[]): Promise<void> {

@@ -9,6 +9,7 @@ import {
   getParty,
   getSession,
   loadSession,
+  recordBattleResult,
   updatePartyMember,
   updatePosition,
 } from '../sessionCache.js';
@@ -112,5 +113,22 @@ describe('sessionCache', () => {
     evictSession('account-1');
 
     expect(getSession('account-1')).toBeUndefined();
+  });
+
+  it('recordBattleResult updates the cache and write-throughs to the store', async () => {
+    const store = new InMemoryPersistenceStore();
+    await loadSession(store, 'account-1', 'Ash', SPAWN);
+
+    expect(recordBattleResult('account-1', 'win', store)).toEqual({ wins: 1, losses: 0 });
+    expect(recordBattleResult('account-1', 'loss', store)).toEqual({ wins: 1, losses: 1 });
+    expect(getSession('account-1')).toMatchObject({ wins: 1, losses: 1 });
+
+    const persisted = await store.loadPlayer('account-1');
+    expect(persisted).toMatchObject({ wins: 1, losses: 1 });
+  });
+
+  it('recordBattleResult is a no-op for an account that was never loaded', () => {
+    const store = new InMemoryPersistenceStore();
+    expect(recordBattleResult('never-loaded', 'win', store)).toEqual({ wins: 0, losses: 0 });
   });
 });

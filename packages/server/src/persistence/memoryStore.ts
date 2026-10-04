@@ -67,6 +67,8 @@ export class InMemoryPersistenceStore implements PersistenceStore {
       y: spawn.y,
       direction: spawn.direction,
       party: starterParty,
+      wins: 0,
+      losses: 0,
     };
     this.players.set(accountId, player);
     return player;
@@ -89,5 +91,13 @@ export class InMemoryPersistenceStore implements PersistenceStore {
     const player = this.players.get(accountId);
     if (!player) return;
     player.party = party;
+  }
+
+  async recordBattleResult(accountId: string, result: 'win' | 'loss'): Promise<{ wins: number; losses: number }> {
+    const player = this.players.get(accountId);
+    if (!player) return { wins: 0, losses: 0 };
+    if (result === 'win') player.wins += 1;
+    else player.losses += 1;
+    return { wins: player.wins, losses: player.losses };
   }
 }

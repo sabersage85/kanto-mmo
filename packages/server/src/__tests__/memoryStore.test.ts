@@ -93,4 +93,17 @@ describe('InMemoryPersistenceStore', () => {
     const store = new InMemoryPersistenceStore();
     expect(await store.loadPlayer('unknown-account')).toBeNull();
   });
+
+  it('recordBattleResult increments wins/losses independently and is a no-op for an unknown account', async () => {
+    const store = new InMemoryPersistenceStore();
+    const account = await store.createAccount('trainer@example.com', 'hash123');
+    const spawn = { mapId: 'route1', x: 0, y: 0, direction: 'down' as const };
+    await store.ensureStarterPlayer(account.id, 'Trainer', spawn, []);
+
+    expect(await store.recordBattleResult(account.id, 'win')).toEqual({ wins: 1, losses: 0 });
+    expect(await store.recordBattleResult(account.id, 'win')).toEqual({ wins: 2, losses: 0 });
+    expect(await store.recordBattleResult(account.id, 'loss')).toEqual({ wins: 2, losses: 1 });
+
+    expect(await store.recordBattleResult('unknown-account', 'win')).toEqual({ wins: 0, losses: 0 });
+  });
 });

@@ -10,6 +10,8 @@ export interface SessionRecord {
   y: number;
   direction: Direction;
   party: CreatureInstance[];
+  wins: number;
+  losses: number;
 }
 
 /**
@@ -43,6 +45,8 @@ export async function loadSession(
         y: spawn.y,
         direction: spawn.direction,
         party: (await store.ensureStarterPlayer(accountId, fallbackName, spawn, createStarterParty())).party,
+        wins: 0,
+        losses: 0,
       };
 
   cache.set(accountId, record);
@@ -95,6 +99,25 @@ export function updatePosition(
     // eslint-disable-next-line no-console
     console.error(`[sessionCache] failed to persist position for ${accountId}:`, err);
   });
+}
+
+/** Updates the in-memory win/loss tally optimistically, then write-through persists it (Milestone 4 PvP). */
+export function recordBattleResult(
+  accountId: string,
+  result: 'win' | 'loss',
+  store: PersistenceStore,
+): { wins: number; losses: number } {
+  const record = cache.get(accountId);
+  if (!record) return { wins: 0, losses: 0 };
+  if (result === 'win') record.wins += 1;
+  else record.losses += 1;
+
+  void store.recordBattleResult(accountId, result).catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[sessionCache] failed to persist battle result for ${accountId}:`, err);
+  });
+
+  return { wins: record.wins, losses: record.losses };
 }
 
 /** Awaited, synchronous flush of the cached record to the store — used when a player fully disconnects. */

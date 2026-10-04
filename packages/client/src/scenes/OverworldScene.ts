@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import type { MapDefinition, MoveInput } from '@kanto-mmo/shared';
 import type { Room } from 'colyseus.js';
 import { clearStoredSession, fetchMap, joinOverworld } from '../net.js';
+import { hideChallengeOverlay, showChallengeOverlay } from '../ui/challengeOverlay.js';
 
 /** Placeholder colors standing in for real tile art (no copied assets). */
 const TILE_COLORS: Record<string, number> = {
@@ -24,6 +25,8 @@ interface NetworkedPlayer {
   x: number;
   y: number;
   name: string;
+  wins: number;
+  losses: number;
   onChange(callback: () => void): void;
 }
 
@@ -36,6 +39,20 @@ interface EncounterStartMessage {
   token: string;
   speciesId: number;
   level: number;
+}
+
+interface ChallengeIncomingMessage {
+  fromSessionId: string;
+  fromName: string;
+}
+
+interface ChallengeErrorMessage {
+  reason: string;
+}
+
+interface PvpBattleStartMessage {
+  roomId: string;
+  opponentName: string;
 }
 
 /** Data passed back in when resuming this scene after a battle ends, or in on first boot from main.ts. */
@@ -56,12 +73,14 @@ export class OverworldScene extends Phaser.Scene {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
   private lastMoveAt = 0;
+  private recordText!: Phaser.GameObjects.Text;
   /**
    * Colyseus state-collection listeners (onAdd/onRemove/onMessage) must
    * only ever be attached once per Room instance, even though this scene's
    * create() re-runs every time we return here from a battle.
    */
   private listenersAttached = false;
+
 
   constructor() {
     super('overworld');
@@ -101,6 +120,12 @@ export class OverworldScene extends Phaser.Scene {
 
     this.drawMap();
 
+    this.recordText = this.add.text(16, 36, '', {
+      color: '#ffe066',
+      fontFamily: 'monospace',
+      fontSize: '12px',
+    });
+
     // (Re)create a visual for every player already known to the room,
     // since Phaser destroys this scene's game objects whenever we leave
     // for a battle and recreates them when we return.
@@ -128,6 +153,31 @@ export class OverworldScene extends Phaser.Scene {
       this.room.onMessage('encounterStart', (message: EncounterStartMessage) => {
         this.scene.start('battle', {
           encounterToken: message.token,
+          sessionToken: this.sessionToken,
+          overworldRoom: this.room,
+          map: this.map,
+        });
+      });
+
+      this.room.onMessage('challengeIncoming', (message: ChallengeIncomingMessage) => {
+        showChallengeOverlay(message.fromName, (accept) => {
+          this.room.send('challengeRespond', { accept });
+        });
+      });
+
+      this.room.onMessage('challengeDeclined', () => {
+        this.showTransientMessage('Challenge declined.');
+      });
+
+      this.room.onMessage('challengeError', (message: ChallengeErrorMessage) => {
+        this.showTransientMessage(message.reason);
+      });
+
+      this.room.onMessage('pvpBattleStart', (message: PvpBattleStartMessage) => {
+        hideChallengeOverlay();
+        this.scene.start('pvpBattle', {
+          roomId: message.roomId,
+          opponentName: message.opponentName,
           sessionToken: this.sessionToken,
           overworldRoom: this.room,
           map: this.map,
@@ -208,11 +258,29 @@ export class OverworldScene extends Phaser.Scene {
       const { x, y } = this.tileToWorld(player.x, player.y);
       v.rect.setPosition(x, y);
       v.label.setPosition(x, y - 24);
+      if (isLocal) this.recordText.setText(`Record: ${player.wins}W / ${player.losses}L`);
     });
 
     if (isLocal) {
       this.cameras.main.startFollow(visual.rect, true);
+      this.recordText.setText(`Record: ${player.wins}W / ${player.losses}L`);
+    } else {
+      // Click a remote player to send them a PvP challenge (Milestone 4).
+      visual.rect.setInteractive({ useHandCursor: true });
+      visual.rect.on('pointerdown', () => {
+        this.room.send('challengeRequest', { targetSessionId: sessionId });
+      });
     }
+  }
+
+  /** Brief on-screen notice for challenge errors/declines — auto-clears after a couple seconds. */
+  private showTransientMessage(text: string): void {
+    const notice = this.add.text(16, 56, text, {
+      color: '#ff8a3d',
+      fontFamily: 'monospace',
+      fontSize: '12px',
+    });
+    this.time.delayedCall(2500, () => notice.destroy());
   }
 
   private createPlayerVisual(

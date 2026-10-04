@@ -185,6 +185,87 @@ export function getBattleOutcome(
   return null;
 }
 
+/**
+ * Turn-based PvP battle logic (Milestone 4): two human-controlled sides
+ * instead of PvE wild-creature AI. Both sides submit a move each turn;
+ * `resolvePvpTurn` resolves one turn deterministically given both moves
+ * (and optional injected RNG, same pattern as `applyMove`/PvE above), so
+ * it can be unit tested without any Colyseus/timer machinery. Design
+ * choice: each side battles with a single active creature (the first
+ * living party member), not a full rotating party — see README/ROADMAP
+ * for the rationale (keeps this milestone's scope tight; no switch UI or
+ * multi-faint bookkeeping needed yet).
+ */
+export type PvpSide = 'challenger' | 'opponent';
+
+/** Determines move order for one PvP turn based on Speed, with a random tiebreak. */
+export function resolvePvpTurnOrder(
+  challengerSpeed: number,
+  opponentSpeed: number,
+  tieBreakRoll: number = Math.random(),
+): [PvpSide, PvpSide] {
+  if (challengerSpeed === opponentSpeed) {
+    return tieBreakRoll < 0.5 ? ['challenger', 'opponent'] : ['opponent', 'challenger'];
+  }
+  return challengerSpeed > opponentSpeed ? ['challenger', 'opponent'] : ['opponent', 'challenger'];
+}
+
+export type PvpOutcome = 'challenger_win' | 'opponent_win' | null;
+
+/** Returns the PvP battle outcome, or null if both creatures can still fight. */
+export function getPvpOutcome(
+  challenger: BattleCreatureState,
+  opponent: BattleCreatureState,
+): PvpOutcome {
+  if (isFainted(challenger)) return 'opponent_win';
+  if (isFainted(opponent)) return 'challenger_win';
+  return null;
+}
+
+export interface PvpTurnResult {
+  order: [PvpSide, PvpSide];
+  /** The move result for each side that actually got to act this turn (a side that fainted first may be skipped). */
+  results: Partial<Record<PvpSide, MoveResult>>;
+  outcome: PvpOutcome;
+}
+
+export interface PvpTurnRng {
+  tieBreakRoll?: number;
+  challenger?: ApplyMoveRng;
+  opponent?: ApplyMoveRng;
+}
+
+/**
+ * Resolves one full PvP turn: determines speed order, then applies each
+ * side's chosen move in order (skipping a side that already fainted
+ * earlier in the same turn), mutating both creatures' currentHp in place.
+ */
+export function resolvePvpTurn(
+  challenger: BattleCreatureState,
+  opponent: BattleCreatureState,
+  challengerMove: MoveDefinition,
+  opponentMove: MoveDefinition,
+  rng: PvpTurnRng = {},
+): PvpTurnResult {
+  const order = resolvePvpTurnOrder(challenger.stats.speed, opponent.stats.speed, rng.tieBreakRoll);
+  const results: Partial<Record<PvpSide, MoveResult>> = {};
+
+  for (const side of order) {
+    const attacker = side === 'challenger' ? challenger : opponent;
+    const defender = side === 'challenger' ? opponent : challenger;
+    if (attacker.currentHp <= 0) continue;
+
+    const move = side === 'challenger' ? challengerMove : opponentMove;
+    const sideRng = side === 'challenger' ? rng.challenger : rng.opponent;
+    results[side] = applyMove(attacker, defender, move, sideRng ?? {});
+
+    const outcome = getPvpOutcome(challenger, opponent);
+    if (outcome) return { order, results, outcome };
+  }
+
+  return { order, results, outcome: getPvpOutcome(challenger, opponent) };
+}
+
 export interface ExpAwardResult {
   instance: CreatureInstance;
   expGained: number;

@@ -81,6 +81,11 @@ export async function createBattle(sessionToken: string, encounterToken: string)
   return colyseusClient.create('battle', { sessionToken, encounterToken });
 }
 
+/** Joins a server-created PvP battle room by id (Milestone 4 — both sides join the same room the server made). */
+export async function joinPvpBattle(sessionToken: string, roomId: string): Promise<Room> {
+  return colyseusClient.joinById(roomId, { sessionToken });
+}
+
 export async function fetchMap(mapId: string): Promise<unknown> {
   const res = await fetch(`${SERVER_HTTP_URL}/maps/${mapId}`);
   if (!res.ok) throw new Error(`Failed to load map "${mapId}": ${res.status}`);

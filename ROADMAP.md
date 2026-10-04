@@ -92,13 +92,64 @@ especially).
 - **Deferred to a later milestone:** inventory persistence (there's no
   inventory system yet — that's Milestone 2 above); OAuth login.
 
-## Milestone 4 — PvP Battles
+## Milestone 4 — PvP Battles (done, this session)
 
-- Matchmaking or direct-challenge flow between two online players.
-- Reuse the turn-based battle engine from Milestone 1, adapted for two
-  human-controlled sides instead of PvE AI.
-- Basic ranking/record tracking (wins/losses), stored via Milestone 3's
-  persistence layer.
+- **Direct-challenge flow**: any online player can click another player's
+  rectangle in the shared overworld to send a `challengeRequest`; the
+  target sees an accept/decline overlay (`ui/challengeOverlay.ts`) that
+  auto-declines after 20s if ignored. Handshake state (pending/accepted/
+  declined/expired, one outstanding challenge per player in either
+  direction) lives in a pure, Colyseus-independent state machine
+  (`pvp/challengeManager.ts`) so it's fully unit-testable without a room.
+- **Design choice — single active creature, not full party**: each side
+  battles with its first living party member (same "first alive" pattern
+  `BattleRoom` already uses for PvE), not a rotating full-party battle.
+  This reuses the existing single-creature `BattleCreatureState` plumbing
+  and avoids switch-mid-battle UI/logic that would meaningfully grow this
+  milestone's scope; a full-party PvP mode remains a reasonable future
+  enhancement once there's a reason to add in-battle switching generally
+  (e.g. for status effects/abilities in Milestone 7).
+- **Design choice — no XP for PvP wins**: PvP only updates each account's
+  lifetime win/loss record; XP/leveling remains a PvE-only reward via
+  Milestone 1's `applyBattleExpGain`, so PvP can't be used to grind levels
+  faster than wild battles.
+- **Battle engine reuse**: `shared/battle.ts` gained `resolvePvpTurnOrder`,
+  `getPvpOutcome`, and `resolvePvpTurn` — these call the exact same
+  `calculateDamage`/type-effectiveness/turn-order functions Milestone 1
+  built, just resolving two submitted moves instead of one submitted move
+  + one AI move.
+- **`PvpBattleRoom`**: a new two-human Colyseus room (max 2 clients),
+  created server-side via `matchMaker.createRoom` once both players accept
+  a challenge in `OverworldRoom` (so a modified client can't fabricate its
+  own match or pick its opponent's identity). Each side has a 30-second
+  per-turn timeout (forfeit-on-timeout) and a 20-second reconnect grace
+  window on an ungraceful disconnect, shorter than the overworld's 30s so
+  PvP matches don't stall as long waiting for a dropped player.
+- **Persistence**: `wins`/`losses` columns added to the `players` table
+  (migration `drizzle/0001_broken_mesmero.sql`), a new
+  `recordBattleResult()` on `PersistenceStore` (implemented for both
+  `InMemoryPersistenceStore` and `DrizzlePostgresStore` via an atomic SQL
+  increment), and a `sessionCache.recordBattleResult()` write-through
+  wrapper so the record updates instantly in the live session and is
+  durably saved. Final HP also persists back to the party on battle end,
+  consistent with the PvE loss convention (the loser's creature can end
+  fainted).
+- **Client**: `PvpBattleScene` (mirrors `BattleScene`'s placeholder-art HP
+  bars/move buttons/log) labels panels with each player's real name instead
+  of "wild encounter", disables a player's own move buttons with a
+  "waiting for opponent..." indicator after they submit until the next
+  turn resolves, and shows the final win/loss record on battle end. The
+  overworld scene shows the local player's own live win/loss record in a
+  corner HUD line.
+- Unit tests (vitest): 8 new shared tests (PvP turn order, outcome
+  detection, full turn resolution incl. mid-turn faint skip), 7 new
+  `ChallengeManager` tests, and 10 new `PvpMatch` tests (move validation,
+  turn resolution, forfeit, idempotency) — 43 shared + 48 server tests
+  total, all passing.
+- Manually verified end-to-end with two scripted Colyseus clients: register
+  both accounts → join overworld → challenge → accept → battle resolves to
+  a win/loss → win/loss record updates on both sides → re-login confirms
+  the record persisted.
 
 ## Milestone 5 — Trading
 

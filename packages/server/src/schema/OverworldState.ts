@@ -7,6 +7,8 @@ export class PlayerSchema extends Schema {
   @type('number') x = 0;
   @type('number') y = 0;
   @type('string') direction: 'up' | 'down' | 'left' | 'right' = 'down';
+  @type('number') wins = 0;
+  @type('number') losses = 0;
 }
 
 /** Root networked state for an OverworldRoom. */

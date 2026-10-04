@@ -32,6 +32,9 @@ export const players = pgTable('players', {
   x: integer('x').notNull(),
   y: integer('y').notNull(),
   direction: text('direction').notNull(),
+  /** Lifetime PvP record (Milestone 4). Wild/PvE battles do not affect these. */
+  wins: integer('wins').notNull().default(0),
+  losses: integer('losses').notNull().default(0),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
