@@ -9,3 +9,4 @@ export * from './battle.js';
 export * from './encounter.js';
 export * from './items.js';
 export * from './inventory.js';
+export * from './trade.js';

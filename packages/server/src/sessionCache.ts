@@ -1,10 +1,10 @@
-import type { CreatureInstance, Direction, InventorySlot } from '@kanto-mmo/shared';
-import { addItemToInventory, removeItemFromInventory } from '@kanto-mmo/shared';
+import type { CreatureInstance, Direction, InventorySlot, TradeOffer } from '@kanto-mmo/shared';
+import { addItemToInventory, executeTrade, PARTY_CAP, removeItemFromInventory } from '@kanto-mmo/shared';
 import type { PersistenceStore } from './persistence/types.js';
 import { createStarterInventory, createStarterParty, STARTER_CURRENCY } from './starterParty.js';
 
-/** Maximum party size; a caught creature beyond this overflows into `storage` instead. */
-export const PARTY_CAP = 6;
+/** Maximum party size; a caught creature beyond this overflows into `storage` instead. Re-exported from shared (Milestone 5) so server and shared trade logic share one source of truth. */
+export { PARTY_CAP };
 
 export interface SessionRecord {
   accountId: string;
@@ -271,4 +271,60 @@ export function addCreatureToPartyOrStorage(
     console.error(`[sessionCache] failed to persist storage for ${accountId}:`, err);
   });
   return 'storage';
+}
+
+export type TradeExecutionOutcome =
+  | { success: true }
+  | { success: false; reason: string };
+
+/**
+ * Re-validates both sides' *live* cached state and, if still valid, applies
+ * the atomic swap computed by `@kanto-mmo/shared`'s `executeTrade` to both
+ * cached records and write-throughs the changed lists (party/storage/
+ * inventory) for each account. Only mutates the cache on success — a
+ * rejected trade (stale offer, item spent elsewhere since confirming,
+ * etc.) leaves both cached records completely untouched, same guarantee
+ * `executeTrade` provides at the pure-function level (Milestone 5).
+ */
+export function executeTradeBetween(
+  accountIdA: string,
+  offerA: TradeOffer,
+  accountIdB: string,
+  offerB: TradeOffer,
+  store: PersistenceStore,
+): TradeExecutionOutcome {
+  const recordA = cache.get(accountIdA);
+  const recordB = cache.get(accountIdB);
+  if (!recordA || !recordB) {
+    return { success: false, reason: 'One or both trainers are no longer online.' };
+  }
+
+  const result = executeTrade(
+    { inventory: recordA.inventory, party: recordA.party, storage: recordA.storage },
+    offerA,
+    { inventory: recordB.inventory, party: recordB.party, storage: recordB.storage },
+    offerB,
+  );
+  if (!result.success) return result;
+
+  recordA.inventory = result.sideA.inventory;
+  recordA.party = result.sideA.party;
+  recordA.storage = result.sideA.storage;
+  recordB.inventory = result.sideB.inventory;
+  recordB.party = result.sideB.party;
+  recordB.storage = result.sideB.storage;
+
+  void Promise.all([
+    store.saveInventory(accountIdA, recordA.inventory),
+    store.saveParty(accountIdA, recordA.party),
+    store.saveStorage(accountIdA, recordA.storage),
+    store.saveInventory(accountIdB, recordB.inventory),
+    store.saveParty(accountIdB, recordB.party),
+    store.saveStorage(accountIdB, recordB.storage),
+  ]).catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[sessionCache] failed to persist trade between ${accountIdA} and ${accountIdB}:`, err);
+  });
+
+  return { success: true };
 }

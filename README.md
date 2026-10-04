@@ -19,10 +19,10 @@ a single-player cartridge game. Long term, the game will feature:
   original equivalent).
 - PvP battles and trading between players.
 
-This milestone builds on persistence/accounts/auth and PvP with
-**inventory & items**: players can buy items at a shop tile, use healing
-and stat-boost items on their party, and use catching tools during wild
-battles to add new creatures to their party.
+This milestone builds on persistence/accounts/auth, PvP, and inventory with
+**trading**: players can send a trade request to another online player,
+negotiate an offer of items and/or creatures, and execute a server-
+authoritative atomic swap once both sides confirm.
 
 ## Asset & Legal Policy
 
@@ -75,30 +75,32 @@ packages/
             OverworldRoom that tracks every connected player's position on
             a JSON-defined grid map, validates movement server-side, rolls
             wild encounters on grass tiles, offers a shop on `shop` tiles,
-            handles server-authoritative inventory/currency mutations, and
-            handles PvP challenge requests/responses, broadcasting state to
-            all clients in real time. A BattleRoom resolves one-player-vs-
-            one-wild-creature PvE battles (turn order, damage, win/loss, XP
-            award, item use incl. the catch mechanic); a PvpBattleRoom
-            resolves two-human-controlled battles (turn order, damage,
-            win/loss, win/loss record persistence, turn timeout/forfeit). A
-            Drizzle/PostgreSQL-backed persistence layer durably stores
-            accounts, sessions, each player's party/position/win-loss
-            record, and now inventory/currency/storage, fronted by a
-            write-through in-memory cache for low-latency reads during
-            gameplay. Also exposes a small Express HTTP API (health check,
-            map data fetch, /auth/register, /auth/login). Has its own
-            vitest suite.
+            handles server-authoritative inventory/currency mutations,
+            handles PvP challenge requests/responses, and handles trade
+            requests/negotiation/atomic execution between two players,
+            broadcasting state to all clients in real time. A BattleRoom
+            resolves one-player-vs-one-wild-creature PvE battles (turn
+            order, damage, win/loss, XP award, item use incl. the catch
+            mechanic); a PvpBattleRoom resolves two-human-controlled
+            battles (turn order, damage, win/loss, win/loss record
+            persistence, turn timeout/forfeit). A Drizzle/PostgreSQL-backed
+            persistence layer durably stores accounts, sessions, each
+            player's party/position/win-loss record, and inventory/
+            currency/storage, fronted by a write-through in-memory cache
+            for low-latency reads during gameplay. Also exposes a small
+            Express HTTP API (health check, map data fetch,
+            /auth/register, /auth/login). Has its own vitest suite.
   client/   Phaser 3 + Vite web client. Shows a DOM login/register overlay
             before connecting, then connects to the Colyseus server,
             renders the map as colored tiles and each player as a colored
-            square (clickable to send a PvP challenge), sends movement
-            input from arrow keys / WASD, and shows a placeholder-art
-            BattleScene (HP bars, move buttons, item menu, battle log) for
-            wild encounters or a PvpBattleScene for player-vs-player
-            battles. An inventory panel overlay (`I` key) and a shop
-            overlay (auto-shown on the shop tile) round out the item
-            system's UI.
+            square (click to send a PvP challenge, shift+click to send a
+            trade request), sends movement input from arrow keys / WASD,
+            and shows a placeholder-art BattleScene (HP bars, move buttons,
+            item menu, battle log) for wild encounters or a PvpBattleScene
+            for player-vs-player battles. An inventory panel overlay (`I`
+            key), a shop overlay (auto-shown on the shop tile), and a trade
+            negotiation panel (opened on trade accept) round out the
+            item/trading UI.
 ```
 
 ```mermaid
@@ -109,7 +111,10 @@ flowchart LR
     A -- WS join w/ token --> B((Colyseus Room))
     A -- WS: encounterStart --> E[BattleScene]
     A -- click player: challengeRequest --> B
+    A -- shift+click player: tradeRequest --> B
     A -- WS: pvpBattleStart --> P[PvpBattleScene]
+    A -- WS: tradeStarted/tradeUpdate --> T[TradePanel overlay]
+    T -- WS: tradeOfferUpdate/tradeConfirm --> B
     E -- WS join w/ token --> F((BattleRoom))
     E -- WS: selectMove / flee --> F
     P -- WS join w/ token --> Q((PvpBattleRoom))
@@ -122,6 +127,7 @@ flowchart LR
     B -- broadcasts state --> A
     B -- rolls encounter, issues token --> F
     B -- matchMaker.createRoom on challenge accept --> Q
+    B -- tradeManager.ts: handshake + executeTradeBetween --> I
     F -- onAuth: validateToken --> G
     F -- broadcasts battle state --> E
     Q -- onAuth: validateToken --> G
@@ -148,7 +154,11 @@ modified client can't fabricate a match or impersonate an opponent.
 Likewise, no room trusts a client-supplied identity: every join is
 authenticated via a server-issued session token (`onAuth` → `validateToken`),
 and the resulting `accountId` is the only identity used to load/save a
-player's party, position, and win/loss record.
+player's party, position, and win/loss record. For trading, `OverworldRoom`
+re-validates both sides' live, server-cached inventory/party ownership
+immediately before executing a swap (never trusting the client's displayed
+offer state), so a trade can't duplicate or lose items/creatures even if a
+client is modified.
 
 ### Tech stack
 
@@ -342,6 +352,22 @@ position with your current party XP/level, win/loss record, and inventory/
 currency/catches all intact. To force a fresh login, clear site data /
 local storage for `localhost:5173`, or use a private window.
 
+### 10. Trade with another player
+
+With both tabs logged in as different accounts and visible in the same
+overworld, **shift+click the other tab's colored player rectangle** (a
+plain click still sends a PvP challenge) to send a trade request. The
+target sees an accept/decline prompt (auto-declines after 20 seconds if
+ignored, same as PvP). On accept, both tabs open a trade negotiation panel:
+pick quantities of items and/or tick party/storage creatures to offer, then
+click **Confirm**. Changing your offer after confirming (or the other side
+changing theirs) resets both sides' confirmation, so there's no way to be
+surprised by a last-second change. Once both sides are confirmed, the
+server re-validates both sides still own what they offered and executes an
+atomic swap — both tabs show the updated inventory/party immediately.
+Reload both tabs afterward to confirm the swapped items/creatures persisted
+on the correct account.
+
 ### Environment variables (client)
 
 The client defaults to connecting to `ws://localhost:2567` /
@@ -355,5 +381,4 @@ VITE_SERVER_HTTP_URL=http://your-server:2567
 ## What's in this milestone vs. what's next
 
 See [ROADMAP.md](./ROADMAP.md) for the planned sequence of future
-milestones (inventory, PvP, trading, gyms/progression, and larger world
-content).
+milestones (gyms/progression and larger world content).

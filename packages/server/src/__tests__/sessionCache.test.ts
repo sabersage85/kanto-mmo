@@ -7,6 +7,7 @@ import {
   addInventoryItem,
   clearAllSessions,
   evictSession,
+  executeTradeBetween,
   flushSession,
   getCurrency,
   getFirstAliveInstance,
@@ -225,5 +226,72 @@ describe('sessionCache', () => {
     expect(getInventory('never-loaded')).toEqual([]);
     expect(getCurrency('never-loaded')).toBe(0);
     expect(getStorage('never-loaded')).toEqual([]);
+  });
+
+  it('executeTradeBetween swaps items/creatures between two live sessions and persists both', async () => {
+    const store = new InMemoryPersistenceStore();
+    await loadSession(store, 'account-1', 'Ash', SPAWN);
+    await loadSession(store, 'account-2', 'Gary', SPAWN);
+
+    addInventoryItem('account-1', 1, 5, store);
+    const creatureA = getParty('account-1')[0];
+    // Give account-2 a second creature so offering one away still leaves them with a party (trade safety rule).
+    addCreatureToPartyOrStorage('account-2', { ...getParty('account-2')[0], instanceId: 'account-2-extra' }, store);
+    const creatureB = getParty('account-2')[0];
+
+    const result = executeTradeBetween(
+      'account-1',
+      { items: [{ itemId: 1, quantity: 2 }], creatureInstanceIds: [] },
+      'account-2',
+      { items: [], creatureInstanceIds: [creatureB.instanceId] },
+      store,
+    );
+    expect(result.success).toBe(true);
+
+    expect(getInventory('account-1').find((s) => s.itemId === 1)?.quantity).toBe(6);
+    expect(getInventory('account-2').find((s) => s.itemId === 1)?.quantity).toBe(5);
+    expect(getParty('account-1').some((c) => c.instanceId === creatureB.instanceId)).toBe(true);
+    expect(getParty('account-2').some((c) => c.instanceId === creatureB.instanceId)).toBe(false);
+
+    const persistedA = await store.loadPlayer('account-1');
+    const persistedB = await store.loadPlayer('account-2');
+    expect(persistedA?.party.some((c) => c.instanceId === creatureB.instanceId)).toBe(true);
+    expect(persistedB?.inventory.find((s) => s.itemId === 1)?.quantity).toBe(5);
+    // Side A keeps its original creature too — this was an item-for-creature trade.
+    expect(getParty('account-1').some((c) => c.instanceId === creatureA.instanceId)).toBe(true);
+  });
+
+  it('executeTradeBetween leaves both cached sessions untouched on a failed (unowned) offer', async () => {
+    const store = new InMemoryPersistenceStore();
+    await loadSession(store, 'account-1', 'Ash', SPAWN);
+    await loadSession(store, 'account-2', 'Gary', SPAWN);
+
+    const before1 = JSON.parse(JSON.stringify(getSession('account-1')));
+    const before2 = JSON.parse(JSON.stringify(getSession('account-2')));
+
+    const result = executeTradeBetween(
+      'account-1',
+      { items: [], creatureInstanceIds: ['does-not-exist'] },
+      'account-2',
+      { items: [], creatureInstanceIds: [] },
+      store,
+    );
+    expect(result.success).toBe(false);
+    expect(getSession('account-1')).toEqual(before1);
+    expect(getSession('account-2')).toEqual(before2);
+  });
+
+  it('executeTradeBetween fails gracefully if either account is no longer cached/online', async () => {
+    const store = new InMemoryPersistenceStore();
+    await loadSession(store, 'account-1', 'Ash', SPAWN);
+
+    const result = executeTradeBetween(
+      'account-1',
+      { items: [], creatureInstanceIds: [] },
+      'offline-account',
+      { items: [], creatureInstanceIds: [] },
+      store,
+    );
+    expect(result.success).toBe(false);
   });
 });

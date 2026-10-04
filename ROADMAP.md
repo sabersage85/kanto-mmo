@@ -211,12 +211,75 @@ especially).
   a win/loss → win/loss record updates on both sides → re-login confirms
   the record persisted.
 
-## Milestone 5 — Trading
+## Milestone 5 — Trading (done, this session)
 
-- A trade-request UI/flow between two players in the same room or via a
-  global "trade post".
-- Server-authoritative trade transaction (atomic swap, no item/creature
-  duplication exploits).
+- **Trade-request flow** mirrors Milestone 4's PvP challenge handshake
+  exactly: shift+click another player's rectangle in the overworld to send
+  a `tradeRequest` (plain click still sends a PvP `challengeRequest` — kept
+  as two distinct gestures so there's no ambiguity about which flow a click
+  starts). The target sees an accept/decline overlay
+  (`ui/tradeRequestOverlay.ts`) that auto-declines after 20s if ignored.
+  Handshake state (pending/accepted/declined/expired, one outstanding
+  request per player) lives in `trade/tradeManager.ts`, a pure
+  Colyseus-independent state machine directly modeled on
+  `pvp/challengeManager.ts`.
+- **Negotiation UI** (`ui/tradePanel.ts`): once accepted, both sides see a
+  two-column panel (their offer / my offer) with quantity inputs for each
+  inventory item and checkboxes for each party/storage creature. Changing
+  either side's offer resets **both** sides' confirmation (standard
+  "no surprise last-second swap" pattern) — implemented server-side in
+  `TradeManager.updateOffer`, not trusted to the client. Only once both
+  sides click Confirm does the trade execute.
+  - **Mixed items + creatures trades are supported in a single offer** —
+    this was scoped a bit wider than the literal "items and/or creatures"
+    requirement by just reusing one unified `TradeOffer` shape
+    (`{ items, creatureInstanceIds }`) for both, rather than separate
+    item-trade/creature-trade flows.
+- **Atomic swap, no duplication risk**: `shared/trade.ts`'s `executeTrade`
+  is a pure function that re-validates **both** sides' current ownership
+  immediately before building any new state, and never mutates its inputs
+  — it only returns brand-new post-trade state objects, and only on full
+  success. There is no decrement-one-side-then-crash window because
+  nothing is written until both sides have already been validated and the
+  new state fully computed. This was directly unit tested by snapshotting
+  both sides' state as JSON before a deliberately-failing trade (e.g. an
+  offered creature no longer owned) and asserting byte-for-byte equality
+  afterward, both in `shared` (`trade.test.ts`) and at the live
+  session-cache layer (`sessionCache.test.ts`).
+- **Design choice — "must keep ≥1 creature" safety rule**: `validateTradeOffer`
+  rejects any offer that would leave the offering side with zero total
+  creatures (party + storage combined), since there's no release/creature-
+  creation mechanic yet and an empty-handed account would be stuck. This
+  wasn't explicitly requested but follows naturally from "don't let trades
+  produce broken state."
+- **Design choice — failed execution keeps the negotiation open**: if both
+  sides confirm but the re-validation at execution time fails (e.g. one
+  side spent an offered item in the brief window before confirming), the
+  trade is **not** aborted — `OverworldRoom.failTrade` resets both sides'
+  confirmations (offers are left intact) and notifies both of the reason,
+  so they can simply adjust the offer and retry rather than redoing the
+  entire request/accept handshake.
+- **Persistence**: no new migration was needed — Milestone 3's
+  `PersistenceStore` already exposed `saveParty`/`saveStorage`/
+  `saveInventory`, which is everything a trade touches.
+  `sessionCache.executeTradeBetween()` re-validates both sides' *live*
+  cached state via `executeTrade`, mutates the cache only on success, and
+  write-throughs all six changed arrays (inventory/party/storage × 2
+  accounts).
+- Unit tests (vitest): 14 new `shared` tests (offer validation incl. every
+  ownership/quantity/≥1-creature edge case, item swap, creature swap,
+  party-cap overflow to storage, failed-trade-leaves-state-untouched,
+  mixed bidirectional items+creatures trade) and 15 new server
+  `TradeManager` tests (handshake incl. self-trade/conflict/TTL-expiry/
+  disconnect-cancellation, offer-update visibility, confirm-reset-on-
+  change, both-confirmed-required, `resetConfirmations`/`endTrade`/
+  `cancelInvolving`) plus 3 new `sessionCache` round-trip tests — 77 shared
+  + 72 server tests total, all passing.
+- Manually verified end-to-end with two scripted Colyseus clients: register
+  both accounts → join overworld → send a trade request → accept → each
+  side offers an item → both confirm → swap executes and both sides'
+  inventories update correctly → disconnect and reconnect both → confirm
+  the swapped items persisted on the correct account.
 
 ## Milestone 6 — Gyms / Progression Structure
 

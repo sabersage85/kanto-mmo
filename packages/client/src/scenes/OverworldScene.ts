@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import type { CreatureInstance, InventorySlot, ItemDefinition, MapDefinition, MoveInput } from '@kanto-mmo/shared';
+import type { CreatureInstance, InventorySlot, ItemDefinition, MapDefinition, MoveInput, TradeOffer } from '@kanto-mmo/shared';
 import type { Room } from 'colyseus.js';
 import { clearStoredSession, fetchMap, joinOverworld } from '../net.js';
 import { hideChallengeOverlay, showChallengeOverlay } from '../ui/challengeOverlay.js';
@@ -10,6 +10,8 @@ import {
   updateInventoryPanel,
 } from '../ui/inventoryPanel.js';
 import { hideShopOverlay, showShopOverlay, updateShopCurrency } from '../ui/shopOverlay.js';
+import { hideTradeRequestOverlay, showTradeRequestOverlay } from '../ui/tradeRequestOverlay.js';
+import { hideTradePanel, showTradePanel, showTradeResultBanner, updateTradePanelState } from '../ui/tradePanel.js';
 
 /** Placeholder colors standing in for real tile art (no copied assets). */
 const TILE_COLORS: Record<string, number> = {
@@ -62,6 +64,7 @@ interface InventoryUpdateMessage {
   inventory: InventorySlot[];
   currency: number;
   party: CreatureInstance[];
+  storage?: CreatureInstance[];
 }
 
 interface ShopAvailableMessage {
@@ -88,6 +91,38 @@ interface ItemUseErrorMessage {
 
 interface ShopErrorMessage {
   reason: string;
+}
+
+interface TradeIncomingMessage {
+  fromSessionId: string;
+  fromName: string;
+}
+
+interface TradeErrorMessage {
+  reason: string;
+}
+
+interface TradeStartedMessage {
+  tradeId: string;
+  opponentName: string;
+  isSideA: boolean;
+}
+
+interface TradeUpdateMessage {
+  tradeId: string;
+  offerA: TradeOffer;
+  offerB: TradeOffer;
+  offerACreatures: CreatureInstance[];
+  offerBCreatures: CreatureInstance[];
+  confirmedA: boolean;
+  confirmedB: boolean;
+}
+
+interface TradeResultMessage {
+  success: boolean;
+  inventory: InventorySlot[];
+  party: CreatureInstance[];
+  storage: CreatureInstance[];
 }
 
 interface PvpBattleStartMessage {
@@ -124,7 +159,10 @@ export class OverworldScene extends Phaser.Scene {
   private inventory: InventorySlot[] = [];
   private currency = 0;
   private party: CreatureInstance[] = [];
+  private storage: CreatureInstance[] = [];
   private inventoryKey!: Phaser.Input.Keyboard.Key;
+  /** Tracks which side of the active trade we are, so incoming `tradeUpdate` broadcasts can be mapped to "mine"/"theirs". */
+  private activeTradeIsSideA = false;
 
 
   constructor() {
@@ -198,6 +236,7 @@ export class OverworldScene extends Phaser.Scene {
       this.room.onMessage('encounterStart', (message: EncounterStartMessage) => {
         hideInventoryPanel();
         hideShopOverlay();
+        hideTradePanel();
         this.scene.start('battle', {
           encounterToken: message.token,
           sessionToken: this.sessionToken,
@@ -236,6 +275,7 @@ export class OverworldScene extends Phaser.Scene {
         this.inventory = message.inventory;
         this.currency = message.currency;
         this.party = message.party;
+        this.storage = message.storage ?? this.storage;
         updateInventoryPanel({ inventory: this.inventory, currency: this.currency, party: this.party });
       });
 
@@ -267,6 +307,61 @@ export class OverworldScene extends Phaser.Scene {
       this.room.onMessage('itemUseError', (message: ItemUseErrorMessage) => {
         this.showTransientMessage(message.reason);
       });
+
+      this.room.onMessage('tradeIncoming', (message: TradeIncomingMessage) => {
+        showTradeRequestOverlay(message.fromName, (accept) => {
+          this.room.send('tradeRespond', { accept });
+        });
+      });
+
+      this.room.onMessage('tradeDeclined', () => {
+        this.showTransientMessage('Trade declined.');
+      });
+
+      this.room.onMessage('tradeError', (message: TradeErrorMessage) => {
+        this.showTransientMessage(message.reason);
+      });
+
+      this.room.onMessage('tradeStarted', (message: TradeStartedMessage) => {
+        hideTradeRequestOverlay();
+        this.activeTradeIsSideA = message.isSideA;
+        showTradePanel(
+          { opponentName: message.opponentName, inventory: this.inventory, party: this.party, storage: this.storage },
+          {
+            onOfferChange: (offer) => this.room.send('tradeOfferUpdate', offer),
+            onConfirm: () => this.room.send('tradeConfirm'),
+            onCancel: () => this.room.send('tradeCancel'),
+          },
+        );
+      });
+
+      this.room.onMessage('tradeUpdate', (message: TradeUpdateMessage) => {
+        const mine = this.activeTradeIsSideA
+          ? { offer: message.offerA, confirmed: message.confirmedA }
+          : { offer: message.offerB, confirmed: message.confirmedB };
+        const theirs = this.activeTradeIsSideA
+          ? { offer: message.offerB, creatures: message.offerBCreatures, confirmed: message.confirmedB }
+          : { offer: message.offerA, creatures: message.offerACreatures, confirmed: message.confirmedA };
+        updateTradePanelState({
+          myOffer: mine.offer,
+          myConfirmed: mine.confirmed,
+          theirOffer: theirs.offer,
+          theirOfferCreatures: theirs.creatures,
+          theirConfirmed: theirs.confirmed,
+        });
+      });
+
+      this.room.onMessage('tradeResult', (message: TradeResultMessage) => {
+        this.inventory = message.inventory;
+        this.party = message.party;
+        this.storage = message.storage;
+        updateInventoryPanel({ inventory: this.inventory, party: this.party });
+        showTradeResultBanner(message.success ? 'Trade complete!' : 'Trade failed.', hideTradePanel);
+      });
+
+      this.room.onMessage('tradeCancelled', () => {
+        showTradeResultBanner('Trade cancelled.', hideTradePanel);
+      });
     }
 
     const keyboard = this.input.keyboard;
@@ -283,6 +378,11 @@ export class OverworldScene extends Phaser.Scene {
     }
 
     this.add.text(16, 332, '[I] Inventory', { color: '#888888', fontFamily: 'monospace', fontSize: '11px' });
+    this.add.text(16, 346, 'Click: challenge · Shift+Click: trade', {
+      color: '#888888',
+      fontFamily: 'monospace',
+      fontSize: '11px',
+    });
   }
 
   private toggleInventoryPanel(): void {
@@ -368,8 +468,13 @@ export class OverworldScene extends Phaser.Scene {
     } else {
       // Click a remote player to send them a PvP challenge (Milestone 4).
       visual.rect.setInteractive({ useHandCursor: true });
-      visual.rect.on('pointerdown', () => {
-        this.room.send('challengeRequest', { targetSessionId: sessionId });
+      visual.rect.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        const event = pointer.event as MouseEvent | undefined;
+        if (event?.shiftKey) {
+          this.room.send('tradeRequest', { targetSessionId: sessionId });
+        } else {
+          this.room.send('challengeRequest', { targetSessionId: sessionId });
+        }
       });
     }
   }

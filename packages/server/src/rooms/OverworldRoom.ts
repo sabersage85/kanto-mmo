@@ -1,7 +1,7 @@
 import colyseus from 'colyseus';
 import type { Client } from 'colyseus';
 const { Room, matchMaker } = colyseus;
-import type { MapDefinition, MoveInput } from '@kanto-mmo/shared';
+import type { InventorySlot, MapDefinition, MoveInput, TradeOffer } from '@kanto-mmo/shared';
 import {
   applyHealToInstance,
   applyStatBoostToInstance,
@@ -20,6 +20,7 @@ import { getPersistenceStore } from '../persistence/store.js';
 import { createPendingEncounter } from '../pendingEncounters.js';
 import {
   addInventoryItem,
+  executeTradeBetween,
   flushSession,
   getCurrency,
   getInventory,
@@ -29,6 +30,8 @@ import {
   updatePosition,
 } from '../sessionCache.js';
 import { ChallengeManager } from '../pvp/challengeManager.js';
+import type { ActiveTrade } from '../trade/tradeManager.js';
+import { TradeManager } from '../trade/tradeManager.js';
 
 interface JoinOptions {
   /** Session token issued by POST /auth/register or /auth/login. */
@@ -47,6 +50,7 @@ export class OverworldRoom extends Room<OverworldState> {
   /** Sessions currently off in a BattleRoom (PvE or PvP); movement/encounters are suppressed for them. */
   private inBattle = new Set<string>();
   private challenges = new ChallengeManager();
+  private trades = new TradeManager();
 
   onCreate(): void {
     this.map = loadMap('route1');
@@ -87,6 +91,29 @@ export class OverworldRoom extends Room<OverworldState> {
     this.onMessage('shopBuy', (client, message: { itemId: number; quantity?: number }) => {
       this.handleShopBuy(client, message?.itemId, message?.quantity ?? 1);
     });
+
+    this.onMessage('tradeRequest', (client, message: { targetSessionId: string }) => {
+      this.handleTradeRequest(client, message?.targetSessionId);
+    });
+
+    this.onMessage('tradeRespond', (client, message: { accept: boolean }) => {
+      this.handleTradeRespond(client, Boolean(message?.accept));
+    });
+
+    this.onMessage(
+      'tradeOfferUpdate',
+      (client, message: { items?: InventorySlot[]; creatureInstanceIds?: string[] }) => {
+        this.handleTradeOfferUpdate(client, message);
+      },
+    );
+
+    this.onMessage('tradeConfirm', (client) => {
+      this.handleTradeConfirm(client);
+    });
+
+    this.onMessage('tradeCancel', (client) => {
+      this.handleTradeCancel(client);
+    });
   }
 
   async onAuth(_client: Client, options: JoinOptions): Promise<AuthData> {
@@ -125,6 +152,7 @@ export class OverworldRoom extends Room<OverworldState> {
       inventory: session.inventory,
       currency: session.currency,
       party: session.party,
+      storage: session.storage,
     });
   }
 
@@ -148,6 +176,13 @@ export class OverworldRoom extends Room<OverworldState> {
     this.accountIds.delete(client.sessionId);
     this.inBattle.delete(client.sessionId);
     this.challenges.cancelInvolving(client.sessionId);
+
+    const cancelledTrade = this.trades.cancelInvolving(client.sessionId);
+    if (cancelledTrade) {
+      const otherSessionId = cancelledTrade.sideA === client.sessionId ? cancelledTrade.sideB : cancelledTrade.sideA;
+      this.inBattle.delete(otherSessionId);
+      this.clients.getById(otherSessionId)?.send('tradeCancelled', {});
+    }
 
     if (accountId) {
       await flushSession(accountId, getPersistenceStore());
@@ -386,5 +421,181 @@ export class OverworldRoom extends Room<OverworldState> {
       challengerClient.send('challengeError', { reason: 'Failed to start the battle. Please try again.' });
       opponentClient.send('challengeError', { reason: 'Failed to start the battle. Please try again.' });
     }
+  }
+
+  /** A player requests to trade with another connected player (Milestone 5). */
+  private handleTradeRequest(client: Client, targetSessionId: string | undefined): void {
+    if (!targetSessionId) return;
+    if (this.inBattle.has(client.sessionId)) {
+      client.send('tradeError', { reason: 'You are already busy.' });
+      return;
+    }
+    const target = this.state.players.get(targetSessionId);
+    if (!target || !this.state.players.has(client.sessionId)) {
+      client.send('tradeError', { reason: 'That trainer is no longer online.' });
+      return;
+    }
+    if (this.inBattle.has(targetSessionId)) {
+      client.send('tradeError', { reason: 'That trainer is busy.' });
+      return;
+    }
+
+    const result = this.trades.request(client.sessionId, targetSessionId);
+    if (!result.ok) {
+      client.send('tradeError', { reason: result.reason });
+      return;
+    }
+
+    const requester = this.state.players.get(client.sessionId);
+    const targetClient = this.clients.getById(targetSessionId);
+    targetClient?.send('tradeIncoming', {
+      fromSessionId: client.sessionId,
+      fromName: requester?.name ?? 'A trainer',
+    });
+  }
+
+  /** The requested player accepts or declines a pending incoming trade request. */
+  private handleTradeRespond(client: Client, accept: boolean): void {
+    const response = this.trades.respond(client.sessionId, accept);
+    if (!response) {
+      client.send('tradeError', { reason: 'That trade request has expired.' });
+      return;
+    }
+
+    const requesterClient = this.clients.getById(response.fromSessionId);
+    if (!accept) {
+      requesterClient?.send('tradeDeclined', { bySessionId: client.sessionId });
+      return;
+    }
+
+    if (!requesterClient || !response.trade) {
+      client.send('tradeError', { reason: 'That trainer disconnected before you accepted.' });
+      return;
+    }
+    if (this.inBattle.has(response.fromSessionId) || this.inBattle.has(client.sessionId)) {
+      client.send('tradeError', { reason: 'One of you is already busy.' });
+      requesterClient.send('tradeError', { reason: 'One of you is already busy.' });
+      this.trades.endTrade(response.trade.id);
+      return;
+    }
+
+    this.inBattle.add(response.fromSessionId);
+    this.inBattle.add(client.sessionId);
+
+    const requesterName = this.state.players.get(response.fromSessionId)?.name ?? 'A trainer';
+    const accepterName = this.state.players.get(client.sessionId)?.name ?? 'A trainer';
+
+    requesterClient.send('tradeStarted', {
+      tradeId: response.trade.id,
+      opponentName: accepterName,
+      isSideA: true,
+    });
+    client.send('tradeStarted', {
+      tradeId: response.trade.id,
+      opponentName: requesterName,
+      isSideA: false,
+    });
+  }
+
+  /** Updates the sending side's trade offer; any change resets both sides' confirmations. */
+  private handleTradeOfferUpdate(
+    client: Client,
+    message: { items?: InventorySlot[]; creatureInstanceIds?: string[] },
+  ): void {
+    const offer: TradeOffer = {
+      items: Array.isArray(message?.items) ? message.items : [],
+      creatureInstanceIds: Array.isArray(message?.creatureInstanceIds) ? message.creatureInstanceIds : [],
+    };
+    const trade = this.trades.updateOffer(client.sessionId, offer);
+    if (!trade) return;
+    this.broadcastTradeState(trade);
+  }
+
+  /** Marks the sending side confirmed; executes the atomic swap once both sides have confirmed. */
+  private handleTradeConfirm(client: Client): void {
+    const trade = this.trades.confirm(client.sessionId);
+    if (!trade) return;
+    this.broadcastTradeState(trade);
+    if (!this.trades.isBothConfirmed(trade)) return;
+
+    const clientA = this.clients.getById(trade.sideA);
+    const clientB = this.clients.getById(trade.sideB);
+    const accountA = this.accountIds.get(trade.sideA);
+    const accountB = this.accountIds.get(trade.sideB);
+
+    if (!accountA || !accountB) {
+      this.failTrade(trade, clientA, clientB, 'Trade failed — one of you disconnected.');
+      return;
+    }
+
+    const store = getPersistenceStore();
+    const result = executeTradeBetween(accountA, trade.offerA, accountB, trade.offerB, store);
+    if (!result.success) {
+      this.failTrade(trade, clientA, clientB, result.reason);
+      return;
+    }
+
+    this.inBattle.delete(trade.sideA);
+    this.inBattle.delete(trade.sideB);
+    this.trades.endTrade(trade.id);
+
+    const sessionA = getSession(accountA);
+    const sessionB = getSession(accountB);
+    clientA?.send('tradeResult', {
+      success: true,
+      inventory: sessionA?.inventory ?? [],
+      party: sessionA?.party ?? [],
+      storage: sessionA?.storage ?? [],
+    });
+    clientB?.send('tradeResult', {
+      success: true,
+      inventory: sessionB?.inventory ?? [],
+      party: sessionB?.party ?? [],
+      storage: sessionB?.storage ?? [],
+    });
+  }
+
+  /** Resets confirmations (so both sides can adjust and retry) and notifies both of why the swap didn't execute. */
+  private failTrade(trade: ActiveTrade, clientA: Client | undefined, clientB: Client | undefined, reason: string): void {
+    this.trades.resetConfirmations(trade.id);
+    this.broadcastTradeState(trade);
+    clientA?.send('tradeError', { reason });
+    clientB?.send('tradeError', { reason });
+  }
+
+  /** Either side cancels an in-progress trade negotiation. */
+  private handleTradeCancel(client: Client): void {
+    const trade = this.trades.getActiveTradeFor(client.sessionId);
+    if (!trade) return;
+    this.trades.endTrade(trade.id);
+    this.inBattle.delete(trade.sideA);
+    this.inBattle.delete(trade.sideB);
+    const otherSessionId = trade.sideA === client.sessionId ? trade.sideB : trade.sideA;
+    this.clients.getById(otherSessionId)?.send('tradeCancelled', {});
+    client.send('tradeCancelled', {});
+  }
+
+  private broadcastTradeState(trade: ActiveTrade): void {
+    const accountA = this.accountIds.get(trade.sideA);
+    const accountB = this.accountIds.get(trade.sideB);
+    const payload = {
+      tradeId: trade.id,
+      offerA: trade.offerA,
+      offerB: trade.offerB,
+      offerACreatures: accountA ? this.resolveOfferedCreatures(accountA, trade.offerA) : [],
+      offerBCreatures: accountB ? this.resolveOfferedCreatures(accountB, trade.offerB) : [],
+      confirmedA: trade.confirmedA,
+      confirmedB: trade.confirmedB,
+    };
+    this.clients.getById(trade.sideA)?.send('tradeUpdate', payload);
+    this.clients.getById(trade.sideB)?.send('tradeUpdate', payload);
+  }
+
+  /** Resolves offered creature instance ids into full `CreatureInstance` objects (from party or storage) for client display. */
+  private resolveOfferedCreatures(accountId: string, offer: TradeOffer) {
+    const session = getSession(accountId);
+    if (!session) return [];
+    const byId = new Map([...session.party, ...session.storage].map((c) => [c.instanceId, c] as const));
+    return offer.creatureInstanceIds.map((id) => byId.get(id)).filter((c): c is NonNullable<typeof c> => Boolean(c));
   }
 }
