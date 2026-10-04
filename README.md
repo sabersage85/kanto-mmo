@@ -19,10 +19,11 @@ a single-player cartridge game. Long term, the game will feature:
   original equivalent).
 - PvP battles and trading between players.
 
-This milestone focuses on the **foundation**: a monorepo architecture, the
-core shared data model and battle math (with tests), and a working real-time
-multiplayer overworld slice that proves the client/server/shared split works
-end-to-end.
+This milestone builds on the foundation slice with **wild encounters and
+turn-based PvE battles**: step onto a grass tile and you may be dropped into
+a battle against a wild creature, fight it turn-by-turn with your starter
+creature, and win XP (or lose and return to the overworld) — all resolved
+authoritatively on the server.
 
 ## Asset & Legal Policy
 
@@ -66,36 +67,49 @@ This is a TypeScript monorepo using **npm workspaces**, with three packages:
 ```
 packages/
   shared/   Framework-agnostic types, data, and formulas used by both
-            client and server (Player/Creature/Move/Map types, damage
-            calc, type effectiveness, XP curve). Has its own vitest suite.
+            client and server (Player/Creature/Move/Map/Battle types,
+            damage calc, type effectiveness, XP curve, turn order/battle
+            resolution, wild encounter rolling). Has its own vitest suite.
   server/   Authoritative Node.js game server, built on Colyseus. Hosts an
             OverworldRoom that tracks every connected player's position on
-            a JSON-defined grid map, validates movement server-side, and
-            broadcasts state to all clients in real time. Also exposes a
-            small Express HTTP API (health check + map data fetch).
+            a JSON-defined grid map, validates movement server-side, rolls
+            wild encounters on grass tiles, and broadcasts state to all
+            clients in real time. A BattleRoom resolves one-player-vs-one-
+            wild-creature PvE battles (turn order, damage, win/loss, XP
+            award). Also exposes a small Express HTTP API (health check +
+            map data fetch). Has its own vitest suite.
   client/   Phaser 3 + Vite web client. Connects to the Colyseus server,
             renders the map as colored tiles and each player as a colored
-            square, and sends movement input from arrow keys / WASD.
+            square, sends movement input from arrow keys / WASD, and shows
+            a placeholder-art BattleScene (HP bars, move buttons, battle
+            log) when an encounter is triggered.
 ```
 
 ```mermaid
 flowchart LR
   subgraph Client [packages/client - Phaser + Vite]
     A[OverworldScene] -- WS: move --> B((Colyseus Room))
+    A -- WS: encounterStart --> E[BattleScene]
+    E -- WS: selectMove / flee --> F((BattleRoom))
     A -- HTTP: GET /maps/:id --> C[Express]
   end
   subgraph Server [packages/server - Colyseus + Express]
     B[OverworldRoom] -- broadcasts state --> A
+    B -- rolls encounter, issues token --> F
+    F -- broadcasts battle state --> E
     C --> D[mapLoader.ts]
   end
-  Shared[packages/shared: types + formulas] -.-> Client
+  Shared[packages/shared: types + formulas + battle logic] -.-> Client
   Shared -.-> Server
 ```
 
 Why this split: `shared` guarantees the client and server never disagree
-about what a `Move`, `Species`, or `MapTile` looks like, or how damage/XP is
-calculated — there is exactly one implementation of each formula, imported
-by both sides.
+about what a `Move`, `Species`, `MapTile`, or `BattleCreatureState` looks
+like, or how damage/XP/turn order is calculated — there is exactly one
+implementation of each formula, imported by both sides. The server never
+trusts a client-chosen wild species/level for a battle: `OverworldRoom`
+rolls the encounter and hands the client a single-use token that
+`BattleRoom` validates before building battle state.
 
 ### Tech stack
 
@@ -122,7 +136,7 @@ npm install
 ### 2. Run tests & build everything
 
 ```sh
-npm test            # runs the shared package's formula/type-chart unit tests
+npm test            # runs shared's and server's vitest suites
 npm run build        # builds shared -> server -> client in order
 ```
 
@@ -159,6 +173,16 @@ different trainer with a random name. Move one tab's player with the
 
 Movement is validated on the server: a player cannot walk through trees or
 water tiles, even if a modified client tries to send bad input.
+
+### 6. Trigger a wild encounter
+
+Every player automatically gets a level-5 starter creature (in-memory only,
+no persistence yet — see [ROADMAP.md](./ROADMAP.md) Milestone 3). Walk onto
+any **grass** tile and there's a chance (server-rolled) of being dropped
+into a battle against a random wild creature. Pick a move each turn; when
+the battle ends (win, loss, or a successful flee) you're returned to the
+overworld automatically. Winning awards XP and may level up your creature
+(which also fully heals it).
 
 ### Environment variables (client)
 

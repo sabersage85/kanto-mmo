@@ -6,7 +6,7 @@ import type { SpeciesDefinition } from './types.js';
  * All names below (Emberwick, Pondrake, etc.) are wholly original and were
  * invented for this project. Base stats are original design values, not
  * copied from any existing game's dex data. This list intentionally stays
- * small (12 species) so it's easy to swap in fully licensed/custom art and
+ * small (15 species) so it's easy to swap in fully licensed/custom art and
  * lore later without restructuring the data schema.
  */
 export const SPECIES: SpeciesDefinition[] = [
@@ -117,6 +117,33 @@ export const SPECIES: SpeciesDefinition[] = [
     growthRate: 'Erratic',
     baseExpYield: 74,
     description: 'Hums a faint tone that only sensitive creatures can hear.',
+  },
+  {
+    id: 13,
+    name: 'Pebblit',
+    types: ['Rock'],
+    baseStats: { hp: 42, attack: 55, defense: 65, spAttack: 30, spDefense: 40, speed: 35 },
+    growthRate: 'Medium',
+    baseExpYield: 58,
+    description: 'A fist-sized stone creature that rolls downhill when startled.',
+  },
+  {
+    id: 14,
+    name: 'Mossling',
+    types: ['Grass'],
+    baseStats: { hp: 48, attack: 45, defense: 48, spAttack: 58, spDefense: 58, speed: 40 },
+    growthRate: 'Medium',
+    baseExpYield: 60,
+    description: 'Moss grows thicker on its back the longer it stays in one spot.',
+  },
+  {
+    id: 15,
+    name: 'Sparkit',
+    types: ['Electric'],
+    baseStats: { hp: 38, attack: 48, defense: 35, spAttack: 55, spDefense: 40, speed: 70 },
+    growthRate: 'Fast',
+    baseExpYield: 59,
+    description: 'Tiny arcs of electricity leap between its whiskers when startled.',
   },
 ];
 

@@ -4,6 +4,7 @@ import cors from 'cors';
 import colyseus from 'colyseus';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { OverworldRoom } from './rooms/OverworldRoom.js';
+import { BattleRoom } from './rooms/BattleRoom.js';
 import { loadMap } from './mapLoader.js';
 
 const { Server } = colyseus;
@@ -36,6 +37,7 @@ const gameServer = new Server({
 });
 
 gameServer.define('overworld', OverworldRoom);
+gameServer.define('battle', BattleRoom);
 
 httpServer.listen(PORT, () => {
   // eslint-disable-next-line no-console

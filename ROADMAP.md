@@ -17,18 +17,31 @@ especially).
   to the server, local movement via arrow keys/WASD synced over the wire.
 - README + this roadmap.
 
-## Milestone 1 — Wild Encounters & Turn-Based PvE Battles
+## Milestone 1 — Wild Encounters & Turn-Based PvE Battles (done, this session)
 
-- Random encounter table per map tile-type (e.g. tall grass has a chance to
-  trigger a battle on step).
-- A `BattleRoom` (or sub-state within `OverworldRoom`) implementing a
-  turn-based battle loop: move selection, speed-based turn order, damage
-  application via `shared`'s `calculateDamage`, fainting, and victory/XP
-  award via `calculateExpGain`.
-- Minimal battle UI in the client (HP bars, move buttons) — still placeholder
-  rectangles/shapes for creatures.
-- Capture mechanic (a simple, original catch-rate formula) so players can
-  start building a party.
+- Step-based random encounter table on `grass` tiles (`rollEncounter` in
+  `shared`), with a weighted wild species/level pool defined server-side
+  per map (`packages/server/src/data/encounters.ts`).
+- A dedicated `BattleRoom` (one player vs one wild creature): speed-based
+  turn order, move selection, damage application via `shared`'s
+  `calculateDamage`/`applyMove`, fainting, win/loss detection, and XP award
+  (with level-up + full heal) via `applyBattleExpGain`.
+- Encounters are rolled authoritatively in `OverworldRoom` and handed to the
+  client via a single-use, player-bound token (`pendingEncounters.ts`) so a
+  modified client can't choose its own (easier) wild opponent.
+- Minimal in-memory player "party" (`playerRegistry.ts`): every player gets
+  a level-5 starter creature on first join. Not yet persisted to a
+  database — that's Milestone 3.
+- Battle UI in the client (`BattleScene`): HP bars, move-selection buttons,
+  a scrolling battle log, and a flee option; transitions to/from the
+  overworld scene on encounter start/battle end.
+- Unit tests (vitest) for turn order, move/damage application, faint/win/
+  loss detection, and XP gain/level-up (`packages/shared`), plus the
+  server-side encounter-token and party-registry logic
+  (`packages/server`).
+- **Deferred to a later milestone:** a capture/catch mechanic (so players
+  can add wild creatures to their party) — not in this slice's scope; wild
+  battles currently only award XP.
 
 ## Milestone 2 — Inventory & Items
 

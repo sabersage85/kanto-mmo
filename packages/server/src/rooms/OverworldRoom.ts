@@ -2,18 +2,26 @@ import colyseus from 'colyseus';
 import type { Client } from 'colyseus';
 const { Room } = colyseus;
 import type { MapDefinition, MoveInput } from '@kanto-mmo/shared';
-import { isWalkable } from '@kanto-mmo/shared';
+import { isWalkable, rollEncounter } from '@kanto-mmo/shared';
 import { OverworldState, PlayerSchema } from '../schema/OverworldState.js';
 import { loadMap } from '../mapLoader.js';
+import { ROUTE1_ENCOUNTERS } from '../data/encounters.js';
+import { getOrCreatePlayer } from '../playerRegistry.js';
+import { createPendingEncounter } from '../pendingEncounters.js';
 
 interface JoinOptions {
   name?: string;
+  /** Client-generated id (persisted in localStorage) identifying this player across rooms/sessions. */
+  playerId?: string;
 }
 
 /** A single shared-world room tracking every connected player's position on one map. */
 export class OverworldRoom extends Room<OverworldState> {
   maxClients = 64;
   private map!: MapDefinition;
+  private playerIds = new Map<string, string>();
+  /** Sessions currently off in a BattleRoom; movement/encounters are suppressed for them. */
+  private inBattle = new Set<string>();
 
   onCreate(): void {
     this.map = loadMap('route1');
@@ -25,6 +33,10 @@ export class OverworldRoom extends Room<OverworldState> {
     this.onMessage('move', (client, message: MoveInput) => {
       this.handleMove(client, message);
     });
+
+    this.onMessage('battleEnded', (client) => {
+      this.inBattle.delete(client.sessionId);
+    });
   }
 
   onJoin(client: Client, options: JoinOptions): void {
@@ -35,14 +47,22 @@ export class OverworldRoom extends Room<OverworldState> {
     player.y = this.map.spawn.y;
     player.direction = 'down';
     this.state.players.set(client.sessionId, player);
+
+    const playerId = options?.playerId || client.sessionId;
+    this.playerIds.set(client.sessionId, playerId);
+    getOrCreatePlayer(playerId, player.name);
   }
 
   onLeave(client: Client): void {
     this.state.players.delete(client.sessionId);
+    this.playerIds.delete(client.sessionId);
+    this.inBattle.delete(client.sessionId);
   }
 
   /** Validates and applies a single-tile movement request from a client. */
   private handleMove(client: Client, input: MoveInput): void {
+    if (this.inBattle.has(client.sessionId)) return;
+
     const player = this.state.players.get(client.sessionId);
     if (!player) return;
 
@@ -65,5 +85,24 @@ export class OverworldRoom extends Room<OverworldState> {
 
     player.x = nextX;
     player.y = nextY;
+
+    this.maybeTriggerEncounter(client, nextX, nextY);
+  }
+
+  /** Rolls a wild encounter if the player just stepped onto a tile type covered by an encounter table. */
+  private maybeTriggerEncounter(client: Client, x: number, y: number): void {
+    const tile = this.map.tiles[y]?.[x];
+    if (!tile || tile.type !== ROUTE1_ENCOUNTERS.tileType) return;
+
+    const roll = rollEncounter(ROUTE1_ENCOUNTERS);
+    if (!roll) return;
+
+    const playerId = this.playerIds.get(client.sessionId);
+    if (!playerId) return;
+
+    this.inBattle.add(client.sessionId);
+    const token = createPendingEncounter(playerId, roll.speciesId, roll.level);
+    client.send('encounterStart', { token, speciesId: roll.speciesId, level: roll.level });
   }
 }
+

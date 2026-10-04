@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { OverworldScene } from './scenes/OverworldScene.js';
+import { BattleScene } from './scenes/BattleScene.js';
 
 new Phaser.Game({
   type: Phaser.AUTO,
@@ -11,5 +12,5 @@ new Phaser.Game({
   physics: {
     default: 'arcade',
   },
-  scene: [OverworldScene],
+  scene: [OverworldScene, BattleScene],
 });

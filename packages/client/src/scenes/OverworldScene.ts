@@ -32,53 +32,88 @@ interface PlayerVisual {
   label: Phaser.GameObjects.Text;
 }
 
+interface EncounterStartMessage {
+  token: string;
+  speciesId: number;
+  level: number;
+}
+
+/** Data passed back in when resuming this scene after a battle ends. */
+interface OverworldResumeData {
+  room?: Room;
+  map?: MapDefinition;
+}
+
 export class OverworldScene extends Phaser.Scene {
   private map!: MapDefinition;
   private room!: Room;
+  private resumeData: OverworldResumeData = {};
   private playerVisuals = new Map<string, PlayerVisual>();
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
   private lastMoveAt = 0;
+  /**
+   * Colyseus state-collection listeners (onAdd/onRemove/onMessage) must
+   * only ever be attached once per Room instance, even though this scene's
+   * create() re-runs every time we return here from a battle.
+   */
+  private listenersAttached = false;
 
   constructor() {
     super('overworld');
   }
 
-  async create(): Promise<void> {
-    const statusText = this.add.text(16, 16, 'Connecting to server...', {
-      color: '#ffffff',
-      fontFamily: 'monospace',
-    });
+  init(data: OverworldResumeData): void {
+    this.resumeData = data ?? {};
+  }
 
-    this.map = (await fetchMap('route1')) as MapDefinition;
+  async create(): Promise<void> {
+    this.playerVisuals = new Map();
+
+    if (this.resumeData.room && this.resumeData.map) {
+      this.room = this.resumeData.room;
+      this.map = this.resumeData.map;
+    } else {
+      const statusText = this.add.text(16, 16, 'Connecting to server...', {
+        color: '#ffffff',
+        fontFamily: 'monospace',
+      });
+      this.map = (await fetchMap('route1')) as MapDefinition;
+      const name = `Trainer${Math.floor(Math.random() * 10000)}`;
+      this.room = await joinOverworld(name);
+      statusText.setText(`Connected as ${name}`);
+    }
+
     this.drawMap();
 
-    const name = `Trainer${Math.floor(Math.random() * 10000)}`;
-    this.room = await joinOverworld(name);
-    statusText.setText(`Connected as ${name}`);
+    // (Re)create a visual for every player already known to the room,
+    // since Phaser destroys this scene's game objects whenever we leave
+    // for a battle and recreates them when we return.
+    this.room.state.players.forEach((player: NetworkedPlayer, sessionId: string) => {
+      this.registerPlayerVisual(sessionId, player);
+    });
 
-    this.room.state.players.onAdd((player: NetworkedPlayer, sessionId: string) => {
-      const isLocal = sessionId === this.room.sessionId;
-      const visual = this.createPlayerVisual(player.x, player.y, player.name, isLocal);
-      this.playerVisuals.set(sessionId, visual);
+    if (!this.listenersAttached) {
+      this.listenersAttached = true;
 
-      player.onChange(() => {
-        const v = this.playerVisuals.get(sessionId);
-        if (!v) return;
-        const { x, y } = this.tileToWorld(player.x, player.y);
-        v.rect.setPosition(x, y);
-        v.label.setPosition(x, y - 24);
+      this.room.state.players.onAdd((player: NetworkedPlayer, sessionId: string) => {
+        if (this.playerVisuals.has(sessionId)) return;
+        this.registerPlayerVisual(sessionId, player);
       });
-    });
 
-    this.room.state.players.onRemove((_player: NetworkedPlayer, sessionId: string) => {
-      const v = this.playerVisuals.get(sessionId);
-      if (v) {
-        v.rect.destroy();
-        v.label.destroy();
-      }
-      this.playerVisuals.delete(sessionId);
-    });
+      this.room.state.players.onRemove((_player: NetworkedPlayer, sessionId: string) => {
+        const v = this.playerVisuals.get(sessionId);
+        if (v) {
+          v.rect.destroy();
+          v.label.destroy();
+        }
+        this.playerVisuals.delete(sessionId);
+      });
+
+      this.room.onMessage('encounterStart', (message: EncounterStartMessage) => {
+        this.scene.start('battle', { token: message.token, overworldRoom: this.room, map: this.map });
+      });
+    }
 
     const keyboard = this.input.keyboard;
     if (keyboard) {
@@ -130,6 +165,24 @@ export class OverworldScene extends Phaser.Scene {
     return { x: tx * tileSize + tileSize / 2, y: ty * tileSize + tileSize / 2 };
   }
 
+  private registerPlayerVisual(sessionId: string, player: NetworkedPlayer): void {
+    const isLocal = sessionId === this.room.sessionId;
+    const visual = this.createPlayerVisual(player.x, player.y, player.name, isLocal);
+    this.playerVisuals.set(sessionId, visual);
+
+    player.onChange(() => {
+      const v = this.playerVisuals.get(sessionId);
+      if (!v) return;
+      const { x, y } = this.tileToWorld(player.x, player.y);
+      v.rect.setPosition(x, y);
+      v.label.setPosition(x, y - 24);
+    });
+
+    if (isLocal) {
+      this.cameras.main.startFollow(visual.rect, true);
+    }
+  }
+
   private createPlayerVisual(
     tx: number,
     ty: number,
@@ -144,10 +197,6 @@ export class OverworldScene extends Phaser.Scene {
     const label = this.add
       .text(x, y - 24, name, { color: '#ffffff', fontSize: '12px', fontFamily: 'monospace' })
       .setOrigin(0.5);
-
-    if (isLocal) {
-      this.cameras.main.startFollow(rect, true);
-    }
 
     return { rect, label };
   }
