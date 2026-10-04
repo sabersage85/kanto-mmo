@@ -1,0 +1,21 @@
+{
+  "name": "@kanto-mmo/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phaser-based Kanto MMO client (placeholder colored-rect art).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@kanto-mmo/shared": "0.1.0",
+    "colyseus.js": "^0.15.23",
+    "phaser": "^3.80.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0"
+  }
+}
