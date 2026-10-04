@@ -1,8 +1,8 @@
 import { eq, sql } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import type { CreatureInstance, Direction, StatBlock } from '@kanto-mmo/shared';
-import { accounts, partyMembers, players, sessions } from '../db/schema.js';
+import type { CreatureInstance, Direction, InventorySlot, StatBlock } from '@kanto-mmo/shared';
+import { accounts, inventoryItems, partyMembers, players, sessions, storageMembers } from '../db/schema.js';
 import type { AccountRecord, PersistedPlayer, PersistenceStore, SessionRecord } from './types.js';
 
 /** Postgres-backed implementation of {@link PersistenceStore}, via Drizzle ORM + postgres.js. */
@@ -58,6 +58,8 @@ export class DrizzlePostgresStore implements PersistenceStore {
     name: string,
     spawn: { mapId: string; x: number; y: number; direction: Direction },
     starterParty: CreatureInstance[],
+    starterInventory: InventorySlot[],
+    starterCurrency: number,
   ): Promise<PersistedPlayer> {
     const existing = await this.loadPlayer(accountId);
     if (existing) return existing;
@@ -69,10 +71,25 @@ export class DrizzlePostgresStore implements PersistenceStore {
       x: spawn.x,
       y: spawn.y,
       direction: spawn.direction,
+      currency: starterCurrency,
     });
     await this.insertParty(accountId, starterParty);
+    await this.insertInventory(accountId, starterInventory);
 
-    return { accountId, name, mapId: spawn.mapId, x: spawn.x, y: spawn.y, direction: spawn.direction, party: starterParty, wins: 0, losses: 0 };
+    return {
+      accountId,
+      name,
+      mapId: spawn.mapId,
+      x: spawn.x,
+      y: spawn.y,
+      direction: spawn.direction,
+      party: starterParty,
+      wins: 0,
+      losses: 0,
+      storage: [],
+      inventory: starterInventory,
+      currency: starterCurrency,
+    };
   }
 
   async loadPlayer(accountId: string): Promise<PersistedPlayer | null> {
@@ -85,17 +102,20 @@ export class DrizzlePostgresStore implements PersistenceStore {
       .where(eq(partyMembers.accountId, accountId))
       .orderBy(partyMembers.slot);
 
-    const party: CreatureInstance[] = partyRows.map((row) => ({
-      instanceId: row.instanceId,
-      speciesId: row.speciesId,
-      nickname: row.nickname ?? undefined,
-      level: row.level,
-      exp: row.exp,
-      ivs: row.ivs as StatBlock,
-      evs: row.evs as StatBlock,
-      moveIds: row.moveIds as number[],
-      currentHp: row.currentHp,
-    }));
+    const storageRows = await this.db
+      .select()
+      .from(storageMembers)
+      .where(eq(storageMembers.accountId, accountId))
+      .orderBy(storageMembers.slot);
+
+    const inventoryRows = await this.db
+      .select()
+      .from(inventoryItems)
+      .where(eq(inventoryItems.accountId, accountId));
+
+    const party: CreatureInstance[] = partyRows.map(rowToCreatureInstance);
+    const storage: CreatureInstance[] = storageRows.map(rowToCreatureInstance);
+    const inventory: InventorySlot[] = inventoryRows.map((row) => ({ itemId: row.itemId, quantity: row.quantity }));
 
     return {
       accountId,
@@ -107,6 +127,9 @@ export class DrizzlePostgresStore implements PersistenceStore {
       party,
       wins: playerRow.wins,
       losses: playerRow.losses,
+      storage,
+      inventory,
+      currency: playerRow.currency,
     };
   }
 
@@ -138,6 +161,42 @@ export class DrizzlePostgresStore implements PersistenceStore {
     return row ?? { wins: 0, losses: 0 };
   }
 
+  async saveStorage(accountId: string, storage: CreatureInstance[]): Promise<void> {
+    await this.db.delete(storageMembers).where(eq(storageMembers.accountId, accountId));
+    if (storage.length === 0) return;
+    await this.db.insert(storageMembers).values(
+      storage.map((creature, slot) => ({
+        accountId,
+        slot,
+        instanceId: creature.instanceId,
+        speciesId: creature.speciesId,
+        nickname: creature.nickname ?? null,
+        level: creature.level,
+        exp: creature.exp,
+        ivs: creature.ivs,
+        evs: creature.evs,
+        moveIds: creature.moveIds,
+        currentHp: creature.currentHp,
+      })),
+    );
+  }
+
+  async saveInventory(accountId: string, inventory: InventorySlot[]): Promise<void> {
+    await this.db.delete(inventoryItems).where(eq(inventoryItems.accountId, accountId));
+    await this.insertInventory(accountId, inventory);
+  }
+
+  async saveCurrency(accountId: string, currency: number): Promise<void> {
+    await this.db.update(players).set({ currency, updatedAt: new Date() }).where(eq(players.accountId, accountId));
+  }
+
+  private async insertInventory(accountId: string, inventory: InventorySlot[]): Promise<void> {
+    if (inventory.length === 0) return;
+    await this.db.insert(inventoryItems).values(
+      inventory.map((slot) => ({ accountId, itemId: slot.itemId, quantity: slot.quantity })),
+    );
+  }
+
   private async insertParty(accountId: string, party: CreatureInstance[]): Promise<void> {
     if (party.length === 0) return;
     await this.db.insert(partyMembers).values(
@@ -156,4 +215,28 @@ export class DrizzlePostgresStore implements PersistenceStore {
       })),
     );
   }
+}
+
+function rowToCreatureInstance(row: {
+  instanceId: string;
+  speciesId: number;
+  nickname: string | null;
+  level: number;
+  exp: number;
+  ivs: unknown;
+  evs: unknown;
+  moveIds: unknown;
+  currentHp: number;
+}): CreatureInstance {
+  return {
+    instanceId: row.instanceId,
+    speciesId: row.speciesId,
+    nickname: row.nickname ?? undefined,
+    level: row.level,
+    exp: row.exp,
+    ivs: row.ivs as StatBlock,
+    evs: row.evs as StatBlock,
+    moveIds: row.moveIds as number[],
+    currentHp: row.currentHp,
+  };
 }

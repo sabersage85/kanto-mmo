@@ -131,3 +131,29 @@ export interface MoveInput {
   dx: number;
   dy: number;
 }
+
+/** Broad grouping used for inventory UI and for gating where an item can be used. */
+export type ItemCategory = 'healing' | 'capture' | 'boost';
+
+/** What using one of an item actually does, server-side. */
+export type ItemEffect =
+  | { kind: 'heal'; amount: number | 'full' }
+  | { kind: 'capture'; catchPower: number }
+  | { kind: 'statBoost'; stat: keyof StatBlock; amount: number };
+
+/** Static definition of an item (Milestone 2). All names/values are original. */
+export interface ItemDefinition {
+  id: number;
+  name: string;
+  category: ItemCategory;
+  description: string;
+  /** In-game currency cost at the shop. */
+  price: number;
+  effect: ItemEffect;
+}
+
+/** One stacked slot in a player's inventory. */
+export interface InventorySlot {
+  itemId: number;
+  quantity: number;
+}

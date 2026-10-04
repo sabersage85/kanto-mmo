@@ -2,14 +2,32 @@ import colyseus from 'colyseus';
 import type { Client } from 'colyseus';
 const { Room, matchMaker } = colyseus;
 import type { MapDefinition, MoveInput } from '@kanto-mmo/shared';
-import { isWalkable, rollEncounter } from '@kanto-mmo/shared';
+import {
+  applyHealToInstance,
+  applyStatBoostToInstance,
+  getItem,
+  getSpecies,
+  isWalkable,
+  ITEMS,
+  removeItemFromInventory,
+  rollEncounter,
+} from '@kanto-mmo/shared';
 import { OverworldState, PlayerSchema } from '../schema/OverworldState.js';
 import { loadMap } from '../mapLoader.js';
 import { ROUTE1_ENCOUNTERS } from '../data/encounters.js';
 import { validateToken } from '../auth/authService.js';
 import { getPersistenceStore } from '../persistence/store.js';
 import { createPendingEncounter } from '../pendingEncounters.js';
-import { flushSession, getSession, loadSession, updatePosition } from '../sessionCache.js';
+import {
+  addInventoryItem,
+  flushSession,
+  getCurrency,
+  getInventory,
+  getSession,
+  loadSession,
+  spendCurrency,
+  updatePosition,
+} from '../sessionCache.js';
 import { ChallengeManager } from '../pvp/challengeManager.js';
 
 interface JoinOptions {
@@ -61,6 +79,14 @@ export class OverworldRoom extends Room<OverworldState> {
     this.onMessage('challengeRespond', (client, message: { accept: boolean }) => {
       void this.handleChallengeRespond(client, Boolean(message?.accept));
     });
+
+    this.onMessage('useItem', (client, message: { itemId: number; instanceId: string }) => {
+      this.handleUseItem(client, message?.itemId, message?.instanceId);
+    });
+
+    this.onMessage('shopBuy', (client, message: { itemId: number; quantity?: number }) => {
+      this.handleShopBuy(client, message?.itemId, message?.quantity ?? 1);
+    });
   }
 
   async onAuth(_client: Client, options: JoinOptions): Promise<AuthData> {
@@ -94,6 +120,12 @@ export class OverworldRoom extends Room<OverworldState> {
     this.state.players.set(client.sessionId, player);
 
     this.accountIds.set(client.sessionId, auth.accountId);
+
+    client.send('inventoryUpdate', {
+      inventory: session.inventory,
+      currency: session.currency,
+      party: session.party,
+    });
   }
 
   async onLeave(client: Client, consented: boolean): Promise<void> {
@@ -155,6 +187,7 @@ export class OverworldRoom extends Room<OverworldState> {
     }
 
     this.maybeTriggerEncounter(client, nextX, nextY);
+    this.maybeTriggerShop(client, nextX, nextY);
   }
 
   /** Rolls a wild encounter if the player just stepped onto a tile type covered by an encounter table. */
@@ -171,6 +204,97 @@ export class OverworldRoom extends Room<OverworldState> {
     this.inBattle.add(client.sessionId);
     const token = createPendingEncounter(accountId, roll.speciesId, roll.level);
     client.send('encounterStart', { token, speciesId: roll.speciesId, level: roll.level });
+  }
+
+  /** Notifies the client it can open the shop UI when it steps onto a 'shop' tile. */
+  private maybeTriggerShop(client: Client, x: number, y: number): void {
+    const tile = this.map.tiles[y]?.[x];
+    if (!tile || tile.type !== 'shop') return;
+    client.send('shopAvailable', { catalog: ITEMS });
+  }
+
+  /** Uses a healing or stat-boost item on a party creature from the overworld menu. Capture items are battle-only. */
+  private handleUseItem(client: Client, itemId: number | undefined, instanceId: string | undefined): void {
+    if (this.inBattle.has(client.sessionId)) return;
+    if (!itemId || !instanceId) return;
+
+    const accountId = this.accountIds.get(client.sessionId);
+    if (!accountId) return;
+    const session = getSession(accountId);
+    if (!session) return;
+
+    let item;
+    try {
+      item = getItem(itemId);
+    } catch {
+      client.send('itemUseError', { reason: 'Unknown item.' });
+      return;
+    }
+    if (item.category === 'capture') {
+      client.send('itemUseError', { reason: 'Capture tools can only be used during a wild battle.' });
+      return;
+    }
+
+    const partyIndex = session.party.findIndex((c) => c.instanceId === instanceId);
+    if (partyIndex < 0) {
+      client.send('itemUseError', { reason: 'That creature is not in your party.' });
+      return;
+    }
+
+    const store = getPersistenceStore();
+    const removed = removeItemFromInventory(getInventory(accountId), itemId, 1);
+    if (!removed.success) {
+      client.send('itemUseError', { reason: "You don't have any of that item." });
+      return;
+    }
+
+    const creature = session.party[partyIndex];
+    const species = getSpecies(creature.speciesId);
+    let updated = creature;
+    if (item.effect.kind === 'heal') {
+      updated = applyHealToInstance(creature, species, item.effect.amount);
+    } else if (item.effect.kind === 'statBoost') {
+      updated = applyStatBoostToInstance(creature, item.effect.stat, item.effect.amount).instance;
+    }
+
+    session.party = session.party.map((c, i) => (i === partyIndex ? updated : c));
+    void store.saveParty(accountId, session.party).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error(`[OverworldRoom] failed to persist party after item use for ${accountId}:`, err);
+    });
+
+    session.inventory = removed.items;
+    void store.saveInventory(accountId, session.inventory).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error(`[OverworldRoom] failed to persist inventory for ${accountId}:`, err);
+    });
+
+    client.send('itemUseResult', { instanceId, creature: updated, inventory: session.inventory, party: session.party });
+  }
+
+  /** Buys `quantity` of a shop item, deducting currency and adding it to the player's inventory. */
+  private handleShopBuy(client: Client, itemId: number | undefined, quantity: number): void {
+    if (!itemId || quantity <= 0) return;
+    const accountId = this.accountIds.get(client.sessionId);
+    if (!accountId) return;
+
+    let item;
+    try {
+      item = getItem(itemId);
+    } catch {
+      client.send('shopError', { reason: 'Unknown item.' });
+      return;
+    }
+
+    const store = getPersistenceStore();
+    const totalCost = item.price * quantity;
+    if (!spendCurrency(accountId, totalCost, store)) {
+      client.send('shopError', { reason: 'Not enough currency.' });
+      return;
+    }
+
+    const inventory = addInventoryItem(accountId, itemId, quantity, store);
+    client.send('shopBuyResult', { itemId, quantity, inventory, currency: getCurrency(accountId) });
   }
 
   /** A player requests to challenge another connected player to a PvP battle. */

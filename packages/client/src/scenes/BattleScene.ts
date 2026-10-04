@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import type { Room } from 'colyseus.js';
-import { getMove, type MapDefinition } from '@kanto-mmo/shared';
+import { getItem, getMove, type InventorySlot, type MapDefinition } from '@kanto-mmo/shared';
 import { createBattle } from '../net.js';
 
 /** Structural shape of the networked BattleState we care about client-side. */
@@ -17,7 +17,7 @@ interface NetworkedBattleLogEntry {
   text: string;
 }
 
-type BattleStatus = 'ongoing' | 'won' | 'lost' | 'fled';
+type BattleStatus = 'ongoing' | 'won' | 'lost' | 'fled' | 'caught';
 
 interface NetworkedBattleState {
   player: NetworkedBattleCreature;
@@ -27,6 +27,7 @@ interface NetworkedBattleState {
   expGained: number;
   leveledUp: boolean;
   newLevel: number;
+  caughtWentToStorage: boolean;
 }
 
 export interface BattleSceneData {
@@ -34,6 +35,12 @@ export interface BattleSceneData {
   sessionToken: string;
   overworldRoom: Room;
   map: MapDefinition;
+  /** Snapshot of the player's inventory taken when the encounter started, for the item-use menu. */
+  inventory?: InventorySlot[];
+}
+
+interface ItemUseErrorMessage {
+  reason: string;
 }
 
 const PLAYER_BAR_COLOR = 0x4fa8ff;
@@ -42,6 +49,7 @@ const HP_BAR_WIDTH = 160;
 const HP_BAR_HEIGHT = 14;
 const LOG_LINES_SHOWN = 6;
 const RESULT_DELAY_MS = 2500;
+
 
 /** Simple, placeholder-art turn-based PvE battle scene (colored rects/text, no copied assets). */
 export class BattleScene extends Phaser.Scene {
@@ -60,6 +68,9 @@ export class BattleScene extends Phaser.Scene {
   private resultText!: Phaser.GameObjects.Text;
   private moveButtons: Phaser.GameObjects.Text[] = [];
   private fleeButton!: Phaser.GameObjects.Text;
+  private itemsButton!: Phaser.GameObjects.Text;
+  private itemButtons: Phaser.GameObjects.Text[] = [];
+  private itemMenuOpen = false;
   private ended = false;
 
   constructor() {
@@ -70,6 +81,8 @@ export class BattleScene extends Phaser.Scene {
     this.sceneData = data;
     this.ended = false;
     this.moveButtons = [];
+    this.itemButtons = [];
+    this.itemMenuOpen = false;
   }
 
   async create(): Promise<void> {
@@ -112,9 +125,13 @@ export class BattleScene extends Phaser.Scene {
       .setDepth(10);
 
     this.fleeButton = this.makeButton(420, 320, 'Flee', () => this.room.send('flee'));
+    this.itemsButton = this.makeButton(420, 284, 'Items', () => this.toggleItemMenu());
 
     this.room = await createBattle(this.sceneData.sessionToken, this.sceneData.encounterToken);
     this.room.onStateChange((state: NetworkedBattleState) => this.renderState(state));
+    this.room.onMessage('itemUseError', (message: ItemUseErrorMessage) => {
+      this.logText.setText(`${this.logText.text}\n${message.reason}`.trim());
+    });
   }
 
   private renderState(state: NetworkedBattleState): void {
@@ -159,6 +176,27 @@ export class BattleScene extends Phaser.Scene {
     });
   }
 
+  /** Opens/closes a small inline menu of healing/capture items, built from the inventory snapshot passed in at battle start. */
+  private toggleItemMenu(): void {
+    this.itemMenuOpen = !this.itemMenuOpen;
+    for (const button of this.itemButtons) button.destroy();
+    this.itemButtons = [];
+    if (!this.itemMenuOpen) return;
+
+    const inventory = this.sceneData.inventory ?? [];
+    const startX = 150;
+    const startY = 258 + 70;
+    inventory.forEach((slot, index) => {
+      const item = getItem(slot.itemId);
+      const x = startX + (index % 2) * 150;
+      const y = startY + Math.floor(index / 2) * 34;
+      const button = this.makeButton(x, y, `${item.name} x${slot.quantity}`, () => {
+        this.room.send('useItem', { itemId: slot.itemId });
+      });
+      this.itemButtons.push(button);
+    });
+  }
+
   private makeButton(x: number, y: number, label: string, onClick: () => void): Phaser.GameObjects.Text {
     const button = this.add
       .text(x, y, label, {
@@ -183,11 +221,16 @@ export class BattleScene extends Phaser.Scene {
       message = 'You blacked out...';
     } else if (state.status === 'fled') {
       message = 'Got away safely!';
+    } else if (state.status === 'caught') {
+      message = `Gotcha! ${state.wild.name} was caught!`;
+      if (state.caughtWentToStorage) message += '\n(sent to storage — party was full)';
     }
 
     this.resultText.setText(message).setVisible(true);
     for (const button of this.moveButtons) button.disableInteractive();
+    for (const button of this.itemButtons) button.disableInteractive();
     this.fleeButton.disableInteractive();
+    this.itemsButton.disableInteractive();
 
     this.sceneData.overworldRoom.send('battleEnded');
     this.time.delayedCall(RESULT_DELAY_MS, () => {

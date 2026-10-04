@@ -3,12 +3,16 @@ import type { Client } from 'colyseus';
 const { Room } = colyseus;
 import {
   applyBattleExpGain,
+  applyHealToInstance,
   applyMove,
+  attemptCatch,
   createBattleCreature,
   creatureInstanceToBattleState,
   getBattleOutcome,
+  getItem,
   getMove,
   getSpecies,
+  instanceFromCapturedWild,
   resolveTurnOrder,
   type BattleCreatureState,
   type CreatureInstance,
@@ -18,7 +22,13 @@ import { BattleCreatureSchema, BattleLogEntrySchema, BattleState } from '../sche
 import { validateToken } from '../auth/authService.js';
 import { getPersistenceStore } from '../persistence/store.js';
 import { consumePendingEncounter } from '../pendingEncounters.js';
-import { getFirstAliveInstance, loadSession, updatePartyMember } from '../sessionCache.js';
+import {
+  addCreatureToPartyOrStorage,
+  getFirstAliveInstance,
+  loadSession,
+  removeInventoryItem,
+  updatePartyMember,
+} from '../sessionCache.js';
 
 interface BattleJoinOptions {
   /** Session token issued by POST /auth/register or /auth/login. */
@@ -119,6 +129,9 @@ export class BattleRoom extends Room<BattleState> {
     });
     this.onMessage('flee', () => {
       this.handleFlee();
+    });
+    this.onMessage('useItem', (client, message: { itemId: number }) => {
+      this.handleUseItem(client, message?.itemId);
     });
   }
 
@@ -232,5 +245,92 @@ export class BattleRoom extends Room<BattleState> {
 
     const outcome = getBattleOutcome(this.playerBattle, this.wildBattle);
     if (outcome) this.finishBattle(outcome);
+  }
+
+  /** Uses a healing item on the player's battling creature, or a capture tool on the wild creature. */
+  private handleUseItem(client: Client, itemId: number | undefined): void {
+    if (this.state.status !== 'ongoing') return;
+    if (!itemId) return;
+
+    let item;
+    try {
+      item = getItem(itemId);
+    } catch {
+      client.send('itemUseError', { reason: 'Unknown item.' });
+      return;
+    }
+    if (item.category === 'boost') {
+      client.send('itemUseError', { reason: 'Stat-boost items can only be used outside of battle.' });
+      return;
+    }
+
+    const store = getPersistenceStore();
+    const removed = removeInventoryItem(this.accountId, itemId, 1, store);
+    if (!removed) {
+      client.send('itemUseError', { reason: "You don't have any of that item." });
+      return;
+    }
+
+    if (item.effect.kind === 'heal') {
+      this.useHealItem(item.name, item.effect.amount);
+      return;
+    }
+    if (item.effect.kind === 'capture') {
+      this.useCaptureItem(item.name, item.effect.catchPower);
+    }
+  }
+
+  /** Heals the player's battling creature, then lets the wild creature still act (like a status-move turn). */
+  private useHealItem(itemName: string, amount: number | 'full'): void {
+    const healedInstance = applyHealToInstance(
+      { ...this.partyInstance, currentHp: this.playerBattle.currentHp },
+      this.playerSpecies,
+      amount,
+    );
+    this.playerBattle = { ...this.playerBattle, currentHp: healedInstance.currentHp };
+    this.syncCreature(this.state.player, this.playerBattle);
+    this.pushLog(`You used ${itemName}! ${this.playerBattle.name} recovered HP.`);
+
+    const wildMoveId = this.wildBattle.moveIds[Math.floor(Math.random() * this.wildBattle.moveIds.length)];
+    const move = getMove(wildMoveId);
+    const result = applyMove(this.wildBattle, this.playerBattle, move);
+    this.pushLog(this.describeMove(this.wildBattle.name, move.name, result));
+    this.syncCreature(this.state.player, this.playerBattle);
+
+    const outcome = getBattleOutcome(this.playerBattle, this.wildBattle);
+    if (outcome) this.finishBattle(outcome);
+  }
+
+  /** Rolls a catch attempt against the wild creature; the item is consumed either way. */
+  private useCaptureItem(itemName: string, catchPower: number): void {
+    const attempt = attemptCatch(
+      { currentHp: this.wildBattle.currentHp, maxHp: this.wildBattle.maxHp },
+      catchPower,
+    );
+
+    if (!attempt.success) {
+      this.pushLog(`You threw a ${itemName}, but ${this.wildBattle.name} broke free!`);
+
+      const wildMoveId = this.wildBattle.moveIds[Math.floor(Math.random() * this.wildBattle.moveIds.length)];
+      const move = getMove(wildMoveId);
+      const result = applyMove(this.wildBattle, this.playerBattle, move);
+      this.pushLog(this.describeMove(this.wildBattle.name, move.name, result));
+      this.syncCreature(this.state.player, this.playerBattle);
+
+      const outcome = getBattleOutcome(this.playerBattle, this.wildBattle);
+      if (outcome) this.finishBattle(outcome);
+      return;
+    }
+
+    const caught = instanceFromCapturedWild(this.wildBattle, this.wildSpecies.growthRate);
+    const destination = addCreatureToPartyOrStorage(this.accountId, caught, getPersistenceStore());
+
+    this.state.status = 'caught';
+    this.state.caughtWentToStorage = destination === 'storage';
+    this.pushLog(
+      `Gotcha! ${this.wildBattle.name} was caught!` +
+        (destination === 'storage' ? ' Your party was full, so it was sent to storage.' : ''),
+    );
+    this.clock.setTimeout(() => this.disconnect(), BATTLE_DISPOSE_DELAY_MS);
   }
 }

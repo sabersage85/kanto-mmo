@@ -35,6 +35,8 @@ export const players = pgTable('players', {
   /** Lifetime PvP record (Milestone 4). Wild/PvE battles do not affect these. */
   wins: integer('wins').notNull().default(0),
   losses: integer('losses').notNull().default(0),
+  /** In-game currency (Milestone 2), spent at the shop tile. */
+  currency: integer('currency').notNull().default(300),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -54,4 +56,37 @@ export const partyMembers = pgTable('party_members', {
   evs: jsonb('evs').notNull(),
   moveIds: jsonb('move_ids').notNull(),
   currentHp: integer('current_hp').notNull(),
+});
+
+/**
+ * Overflow creature storage (Milestone 2): once a party is full (cap of 6),
+ * a newly-caught creature lands here instead. Same shape as
+ * `partyMembers` — kept as a separate table (rather than a status flag) so
+ * party-vs-storage queries/writes stay simple and independent.
+ */
+export const storageMembers = pgTable('storage_members', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  accountId: uuid('account_id')
+    .notNull()
+    .references(() => accounts.id, { onDelete: 'cascade' }),
+  slot: integer('slot').notNull(),
+  instanceId: text('instance_id').notNull(),
+  speciesId: integer('species_id').notNull(),
+  nickname: text('nickname'),
+  level: integer('level').notNull(),
+  exp: integer('exp').notNull(),
+  ivs: jsonb('ivs').notNull(),
+  evs: jsonb('evs').notNull(),
+  moveIds: jsonb('move_ids').notNull(),
+  currentHp: integer('current_hp').notNull(),
+});
+
+/** One stacked inventory slot (Milestone 2). `quantity` is always > 0 (a depleted slot is deleted, not zeroed). */
+export const inventoryItems = pgTable('inventory_items', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  accountId: uuid('account_id')
+    .notNull()
+    .references(() => accounts.id, { onDelete: 'cascade' }),
+  itemId: integer('item_id').notNull(),
+  quantity: integer('quantity').notNull(),
 });

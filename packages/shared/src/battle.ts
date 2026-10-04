@@ -1,4 +1,4 @@
-import { calculateDamage, calculateExpGain, calculateFullStatBlock, levelForTotalExp } from './formulas.js';
+import { calculateDamage, calculateExpGain, calculateFullStatBlock, levelForTotalExp, totalExpForLevel } from './formulas.js';
 import { getDefaultMoveset } from './moveset.js';
 import type {
   CreatureInstance,
@@ -27,8 +27,8 @@ export interface BattleCreatureState {
   moveIds: number[];
 }
 
-const DEFAULT_IVS: StatBlock = { hp: 15, attack: 15, defense: 15, spAttack: 15, spDefense: 15, speed: 15 };
-const ZERO_EVS: StatBlock = { hp: 0, attack: 0, defense: 0, spAttack: 0, spDefense: 0, speed: 0 };
+export const DEFAULT_IVS: StatBlock = { hp: 15, attack: 15, defense: 15, spAttack: 15, spDefense: 15, speed: 15 };
+export const ZERO_EVS: StatBlock = { hp: 0, attack: 0, defense: 0, spAttack: 0, spDefense: 0, speed: 0 };
 
 export interface CreateBattleCreatureOptions {
   ivs?: StatBlock;
@@ -301,4 +301,22 @@ export function applyBattleExpGain(
   };
 
   return { instance: updatedInstance, expGained, leveledUp, previousLevel, newLevel };
+}
+
+/**
+ * Builds a `CreatureInstance` for a wild creature that was just caught
+ * (Milestone 2): keeps its current (possibly damaged) HP and level, with
+ * default IVs/EVs, same as any other freshly-caught creature.
+ */
+export function instanceFromCapturedWild(wild: BattleCreatureState, growthRate: SpeciesDefinition['growthRate']): CreatureInstance {
+  return {
+    instanceId: `caught-${Math.random().toString(36).slice(2, 10)}`,
+    speciesId: wild.speciesId,
+    level: wild.level,
+    exp: totalExpForLevel(wild.level, growthRate),
+    ivs: { ...DEFAULT_IVS },
+    evs: { ...ZERO_EVS },
+    moveIds: [...wild.moveIds],
+    currentHp: wild.currentHp,
+  };
 }

@@ -1,6 +1,10 @@
-import type { CreatureInstance, Direction } from '@kanto-mmo/shared';
+import type { CreatureInstance, Direction, InventorySlot } from '@kanto-mmo/shared';
+import { addItemToInventory, removeItemFromInventory } from '@kanto-mmo/shared';
 import type { PersistenceStore } from './persistence/types.js';
-import { createStarterParty } from './starterParty.js';
+import { createStarterInventory, createStarterParty, STARTER_CURRENCY } from './starterParty.js';
+
+/** Maximum party size; a caught creature beyond this overflows into `storage` instead. */
+export const PARTY_CAP = 6;
 
 export interface SessionRecord {
   accountId: string;
@@ -12,6 +16,9 @@ export interface SessionRecord {
   party: CreatureInstance[];
   wins: number;
   losses: number;
+  storage: CreatureInstance[];
+  inventory: InventorySlot[];
+  currency: number;
 }
 
 /**
@@ -44,9 +51,21 @@ export async function loadSession(
         x: spawn.x,
         y: spawn.y,
         direction: spawn.direction,
-        party: (await store.ensureStarterPlayer(accountId, fallbackName, spawn, createStarterParty())).party,
+        party: (
+          await store.ensureStarterPlayer(
+            accountId,
+            fallbackName,
+            spawn,
+            createStarterParty(),
+            createStarterInventory(),
+            STARTER_CURRENCY,
+          )
+        ).party,
         wins: 0,
         losses: 0,
+        storage: [],
+        inventory: createStarterInventory(),
+        currency: STARTER_CURRENCY,
       };
 
   cache.set(accountId, record);
@@ -127,6 +146,9 @@ export async function flushSession(accountId: string, store: PersistenceStore): 
   await Promise.all([
     store.savePosition(accountId, record.mapId, record.x, record.y, record.direction),
     store.saveParty(accountId, record.party),
+    store.saveStorage(accountId, record.storage),
+    store.saveInventory(accountId, record.inventory),
+    store.saveCurrency(accountId, record.currency),
   ]);
 }
 
@@ -138,4 +160,115 @@ export function evictSession(accountId: string): void {
 /** Test-only helper to ensure isolation between test cases. */
 export function clearAllSessions(): void {
   cache.clear();
+}
+
+export function getInventory(accountId: string): InventorySlot[] {
+  return cache.get(accountId)?.inventory ?? [];
+}
+
+export function getCurrency(accountId: string): number {
+  return cache.get(accountId)?.currency ?? 0;
+}
+
+export function getStorage(accountId: string): CreatureInstance[] {
+  return cache.get(accountId)?.storage ?? [];
+}
+
+/** Adds `quantity` of an item to the cached inventory and write-throughs to the store. */
+export function addInventoryItem(
+  accountId: string,
+  itemId: number,
+  quantity: number,
+  store: PersistenceStore,
+): InventorySlot[] {
+  const record = cache.get(accountId);
+  if (!record) return [];
+  record.inventory = addItemToInventory(record.inventory, itemId, quantity);
+
+  void store.saveInventory(accountId, record.inventory).catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[sessionCache] failed to persist inventory for ${accountId}:`, err);
+  });
+
+  return record.inventory;
+}
+
+/** Removes `quantity` of an item from the cached inventory; returns false (no-op) if there isn't enough. */
+export function removeInventoryItem(
+  accountId: string,
+  itemId: number,
+  quantity: number,
+  store: PersistenceStore,
+): boolean {
+  const record = cache.get(accountId);
+  if (!record) return false;
+
+  const result = removeItemFromInventory(record.inventory, itemId, quantity);
+  if (!result.success) return false;
+  record.inventory = result.items;
+
+  void store.saveInventory(accountId, record.inventory).catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[sessionCache] failed to persist inventory for ${accountId}:`, err);
+  });
+
+  return true;
+}
+
+/** Deducts `amount` currency if affordable; returns false (no-op) otherwise. */
+export function spendCurrency(accountId: string, amount: number, store: PersistenceStore): boolean {
+  const record = cache.get(accountId);
+  if (!record || record.currency < amount) return false;
+  record.currency -= amount;
+
+  void store.saveCurrency(accountId, record.currency).catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[sessionCache] failed to persist currency for ${accountId}:`, err);
+  });
+
+  return true;
+}
+
+/** Adds `amount` currency (e.g. a future reward mechanic) and write-throughs to the store. */
+export function addCurrency(accountId: string, amount: number, store: PersistenceStore): number {
+  const record = cache.get(accountId);
+  if (!record) return 0;
+  record.currency += amount;
+
+  void store.saveCurrency(accountId, record.currency).catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[sessionCache] failed to persist currency for ${accountId}:`, err);
+  });
+
+  return record.currency;
+}
+
+/**
+ * Adds a newly-caught creature to the party if there's room (cap
+ * `PARTY_CAP`), otherwise to overflow storage. Write-throughs whichever
+ * list changed.
+ */
+export function addCreatureToPartyOrStorage(
+  accountId: string,
+  creature: CreatureInstance,
+  store: PersistenceStore,
+): 'party' | 'storage' {
+  const record = cache.get(accountId);
+  if (!record) return 'storage';
+
+  if (record.party.length < PARTY_CAP) {
+    record.party = [...record.party, creature];
+    void store.saveParty(accountId, record.party).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error(`[sessionCache] failed to persist party for ${accountId}:`, err);
+    });
+    return 'party';
+  }
+
+  record.storage = [...record.storage, creature];
+  void store.saveStorage(accountId, record.storage).catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[sessionCache] failed to persist storage for ${accountId}:`, err);
+  });
+  return 'storage';
 }

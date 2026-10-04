@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { CreatureInstance, Direction } from '@kanto-mmo/shared';
+import type { CreatureInstance, Direction, InventorySlot } from '@kanto-mmo/shared';
 import type { AccountRecord, PersistedPlayer, PersistenceStore, SessionRecord } from './types.js';
 
 /**
@@ -55,6 +55,8 @@ export class InMemoryPersistenceStore implements PersistenceStore {
     name: string,
     spawn: { mapId: string; x: number; y: number; direction: Direction },
     starterParty: CreatureInstance[],
+    starterInventory: InventorySlot[],
+    starterCurrency: number,
   ): Promise<PersistedPlayer> {
     const existing = this.players.get(accountId);
     if (existing) return existing;
@@ -69,6 +71,9 @@ export class InMemoryPersistenceStore implements PersistenceStore {
       party: starterParty,
       wins: 0,
       losses: 0,
+      storage: [],
+      inventory: starterInventory,
+      currency: starterCurrency,
     };
     this.players.set(accountId, player);
     return player;
@@ -99,5 +104,23 @@ export class InMemoryPersistenceStore implements PersistenceStore {
     if (result === 'win') player.wins += 1;
     else player.losses += 1;
     return { wins: player.wins, losses: player.losses };
+  }
+
+  async saveStorage(accountId: string, storage: CreatureInstance[]): Promise<void> {
+    const player = this.players.get(accountId);
+    if (!player) return;
+    player.storage = storage;
+  }
+
+  async saveInventory(accountId: string, inventory: InventorySlot[]): Promise<void> {
+    const player = this.players.get(accountId);
+    if (!player) return;
+    player.inventory = inventory;
+  }
+
+  async saveCurrency(accountId: string, currency: number): Promise<void> {
+    const player = this.players.get(accountId);
+    if (!player) return;
+    player.currency = currency;
   }
 }

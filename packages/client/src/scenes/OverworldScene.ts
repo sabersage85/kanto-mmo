@@ -1,8 +1,15 @@
 import Phaser from 'phaser';
-import type { MapDefinition, MoveInput } from '@kanto-mmo/shared';
+import type { CreatureInstance, InventorySlot, ItemDefinition, MapDefinition, MoveInput } from '@kanto-mmo/shared';
 import type { Room } from 'colyseus.js';
 import { clearStoredSession, fetchMap, joinOverworld } from '../net.js';
 import { hideChallengeOverlay, showChallengeOverlay } from '../ui/challengeOverlay.js';
+import {
+  hideInventoryPanel,
+  isInventoryPanelOpen,
+  showInventoryPanel,
+  updateInventoryPanel,
+} from '../ui/inventoryPanel.js';
+import { hideShopOverlay, showShopOverlay, updateShopCurrency } from '../ui/shopOverlay.js';
 
 /** Placeholder colors standing in for real tile art (no copied assets). */
 const TILE_COLORS: Record<string, number> = {
@@ -10,6 +17,7 @@ const TILE_COLORS: Record<string, number> = {
   tree: 0x1f6e2d,
   water: 0x2a6fd6,
   path: 0xc8a765,
+  shop: 0xb04fd6,
 };
 
 const LOCAL_PLAYER_COLOR = 0x4fa8ff;
@@ -50,6 +58,38 @@ interface ChallengeErrorMessage {
   reason: string;
 }
 
+interface InventoryUpdateMessage {
+  inventory: InventorySlot[];
+  currency: number;
+  party: CreatureInstance[];
+}
+
+interface ShopAvailableMessage {
+  catalog: ItemDefinition[];
+}
+
+interface ShopBuyResultMessage {
+  itemId: number;
+  quantity: number;
+  inventory: InventorySlot[];
+  currency: number;
+}
+
+interface ItemUseResultMessage {
+  instanceId: string;
+  creature: CreatureInstance;
+  inventory: InventorySlot[];
+  party: CreatureInstance[];
+}
+
+interface ItemUseErrorMessage {
+  reason: string;
+}
+
+interface ShopErrorMessage {
+  reason: string;
+}
+
 interface PvpBattleStartMessage {
   roomId: string;
   opponentName: string;
@@ -80,6 +120,11 @@ export class OverworldScene extends Phaser.Scene {
    * create() re-runs every time we return here from a battle.
    */
   private listenersAttached = false;
+  /** Client-side cache of the player's inventory/currency/party, kept in sync via server messages. */
+  private inventory: InventorySlot[] = [];
+  private currency = 0;
+  private party: CreatureInstance[] = [];
+  private inventoryKey!: Phaser.Input.Keyboard.Key;
 
 
   constructor() {
@@ -151,11 +196,14 @@ export class OverworldScene extends Phaser.Scene {
       });
 
       this.room.onMessage('encounterStart', (message: EncounterStartMessage) => {
+        hideInventoryPanel();
+        hideShopOverlay();
         this.scene.start('battle', {
           encounterToken: message.token,
           sessionToken: this.sessionToken,
           overworldRoom: this.room,
           map: this.map,
+          inventory: this.inventory,
         });
       });
 
@@ -183,6 +231,42 @@ export class OverworldScene extends Phaser.Scene {
           map: this.map,
         });
       });
+
+      this.room.onMessage('inventoryUpdate', (message: InventoryUpdateMessage) => {
+        this.inventory = message.inventory;
+        this.currency = message.currency;
+        this.party = message.party;
+        updateInventoryPanel({ inventory: this.inventory, currency: this.currency, party: this.party });
+      });
+
+      this.room.onMessage('shopAvailable', (message: ShopAvailableMessage) => {
+        showShopOverlay(message.catalog, this.currency, (itemId) => {
+          this.room.send('shopBuy', { itemId, quantity: 1 });
+        });
+      });
+
+      this.room.onMessage('shopBuyResult', (message: ShopBuyResultMessage) => {
+        this.inventory = message.inventory;
+        this.currency = message.currency;
+        updateShopCurrency(this.currency);
+        updateInventoryPanel({ inventory: this.inventory, currency: this.currency });
+        this.showTransientMessage(`Bought ${message.quantity}x item.`);
+      });
+
+      this.room.onMessage('shopError', (message: ShopErrorMessage) => {
+        this.showTransientMessage(message.reason);
+      });
+
+      this.room.onMessage('itemUseResult', (message: ItemUseResultMessage) => {
+        this.inventory = message.inventory;
+        this.party = message.party;
+        updateInventoryPanel({ inventory: this.inventory, party: this.party });
+        this.showTransientMessage('Item used.');
+      });
+
+      this.room.onMessage('itemUseError', (message: ItemUseErrorMessage) => {
+        this.showTransientMessage(message.reason);
+      });
     }
 
     const keyboard = this.input.keyboard;
@@ -194,7 +278,24 @@ export class OverworldScene extends Phaser.Scene {
         left: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A),
         right: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
       };
+      this.inventoryKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.I);
+      this.inventoryKey.on('down', () => this.toggleInventoryPanel());
     }
+
+    this.add.text(16, 332, '[I] Inventory', { color: '#888888', fontFamily: 'monospace', fontSize: '11px' });
+  }
+
+  private toggleInventoryPanel(): void {
+    if (isInventoryPanelOpen()) {
+      hideInventoryPanel();
+      return;
+    }
+    showInventoryPanel(
+      { inventory: this.inventory, party: this.party, currency: this.currency },
+      (itemId, instanceId) => {
+        this.room.send('useItem', { itemId, instanceId });
+      },
+    );
   }
 
   update(time: number): void {

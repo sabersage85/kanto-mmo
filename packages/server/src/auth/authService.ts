@@ -2,7 +2,7 @@ import type { Direction } from '@kanto-mmo/shared';
 import { loadMap } from '../mapLoader.js';
 import { getPersistenceStore } from '../persistence/store.js';
 import type { PersistenceStore } from '../persistence/types.js';
-import { createStarterParty } from '../starterParty.js';
+import { createStarterInventory, createStarterParty, STARTER_CURRENCY } from '../starterParty.js';
 import { hashPassword, verifyPassword } from './password.js';
 import { generateSessionToken, SESSION_TTL_MS } from './tokens.js';
 
@@ -60,7 +60,14 @@ export function createAuthService(store: PersistenceStore) {
     const passwordHash = hashPassword(password);
     const account = await store.createAccount(normalizedEmail, passwordHash);
     const trainerName = sanitizeName(name);
-    await store.ensureStarterPlayer(account.id, trainerName, defaultSpawn(), createStarterParty());
+    await store.ensureStarterPlayer(
+      account.id,
+      trainerName,
+      defaultSpawn(),
+      createStarterParty(),
+      createStarterInventory(),
+      STARTER_CURRENCY,
+    );
 
     const { token, expiresAt } = await issueSession(store, account.id);
     return { token, expiresAt, name: trainerName };

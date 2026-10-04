@@ -19,10 +19,10 @@ a single-player cartridge game. Long term, the game will feature:
   original equivalent).
 - PvP battles and trading between players.
 
-This milestone builds on persistence/accounts/auth with **PvP battles**:
-online players can challenge each other directly in the shared overworld,
-battle with their persisted party using the same turn-based engine as wild
-encounters, and have a durable win/loss record tracked on their account.
+This milestone builds on persistence/accounts/auth and PvP with
+**inventory & items**: players can buy items at a shop tile, use healing
+and stat-boost items on their party, and use catching tools during wild
+battles to add new creatures to their party.
 
 ## Asset & Legal Policy
 
@@ -45,9 +45,11 @@ What *is* used as reference, and how:
   (`packages/shared/src/formulas.ts`, `typeChart.ts`, etc.) is original
   TypeScript, written from scratch.
 - All creature names (e.g. *Tindle*, *Pondrake*, *Sproutling*), move names
-  (e.g. *Ember Flick*, *Vine Snap*), and numeric game-balance values (base
-  stats, move power/accuracy/pp, XP yields) are **original creations** for
-  this project — see `packages/shared/src/species.ts` and `moves.ts`.
+  (e.g. *Ember Flick*, *Vine Snap*), item names (e.g. *Herb Wrap*, *Rusty
+  Snare*), and numeric game-balance values (base stats, move power/
+  accuracy/pp, XP yields, catch rates, prices) are **original creations**
+  for this project — see `packages/shared/src/species.ts`, `moves.ts`, and
+  `items.ts`.
 - All visuals in this milestone are **placeholder colored rectangles**
   (colored squares for players, colored tiles for terrain). No sprite or
   tileset image files are included anywhere in the repo.
@@ -72,25 +74,31 @@ packages/
   server/   Authoritative Node.js game server, built on Colyseus. Hosts an
             OverworldRoom that tracks every connected player's position on
             a JSON-defined grid map, validates movement server-side, rolls
-            wild encounters on grass tiles, handles PvP challenge requests/
-            responses, and broadcasts state to all clients in real time. A
-            BattleRoom resolves one-player-vs-one-wild-creature PvE battles
-            (turn order, damage, win/loss, XP award); a PvpBattleRoom
+            wild encounters on grass tiles, offers a shop on `shop` tiles,
+            handles server-authoritative inventory/currency mutations, and
+            handles PvP challenge requests/responses, broadcasting state to
+            all clients in real time. A BattleRoom resolves one-player-vs-
+            one-wild-creature PvE battles (turn order, damage, win/loss, XP
+            award, item use incl. the catch mechanic); a PvpBattleRoom
             resolves two-human-controlled battles (turn order, damage,
             win/loss, win/loss record persistence, turn timeout/forfeit). A
             Drizzle/PostgreSQL-backed persistence layer durably stores
-            accounts, sessions, each player's party/position, and win/loss
-            record, fronted by a write-through in-memory cache for
-            low-latency reads during gameplay. Also exposes a small Express
-            HTTP API (health check, map data fetch, /auth/register,
-            /auth/login). Has its own vitest suite.
+            accounts, sessions, each player's party/position/win-loss
+            record, and now inventory/currency/storage, fronted by a
+            write-through in-memory cache for low-latency reads during
+            gameplay. Also exposes a small Express HTTP API (health check,
+            map data fetch, /auth/register, /auth/login). Has its own
+            vitest suite.
   client/   Phaser 3 + Vite web client. Shows a DOM login/register overlay
             before connecting, then connects to the Colyseus server,
             renders the map as colored tiles and each player as a colored
             square (clickable to send a PvP challenge), sends movement
             input from arrow keys / WASD, and shows a placeholder-art
-            BattleScene (HP bars, move buttons, battle log) for wild
-            encounters or a PvpBattleScene for player-vs-player battles.
+            BattleScene (HP bars, move buttons, item menu, battle log) for
+            wild encounters or a PvpBattleScene for player-vs-player
+            battles. An inventory panel overlay (`I` key) and a shop
+            overlay (auto-shown on the shop tile) round out the item
+            system's UI.
 ```
 
 ```mermaid
@@ -215,8 +223,9 @@ npm run db:migrate -w packages/server
 
 This applies `packages/server/drizzle/*.sql` (generated from
 `packages/server/src/db/schema.ts`) to create the `accounts`, `sessions`,
-`players`, and `party_members` tables. If you change the schema later,
-regenerate the migration first with:
+`players`, `party_members`, `inventory_items`, and `storage_members`
+tables. If you change the schema later, regenerate the migration first
+with:
 
 ```sh
 npm run db:generate -w packages/server
@@ -310,14 +319,28 @@ opponent also submits (or 30 seconds pass and they auto-forfeit). On battle
 end, both tabs show the updated win/loss record and return to the
 overworld.
 
-### 8. Test reconnect / persistence
+### 8. Buy, use, and catch items
+
+Walk to the **shop tile** near the middle of the map (a different color
+from the surrounding path) to open a buy overlay — you start with 300
+currency and a small starter inventory. Press **`I`** at any time to open
+your inventory panel and use a healing or stat-boost item on a party
+creature. During a wild battle, open the new **Items** button to use a
+healing item on your active creature or a catching tool on the wild
+creature — the catch chance is higher the lower the wild creature's
+remaining HP and the stronger the tool (see
+[ROADMAP.md](./ROADMAP.md)'s Milestone 2 entry for the exact formula). A
+successful catch adds the creature to your party (or to overflow storage
+if your party of 6 is full).
+
+### 9. Test reconnect / persistence
 
 Close the browser tab (or just reload it) after moving around and winning
 a battle, then reopen `http://localhost:5173`. The cached session token in
 `localStorage` lets you skip the login screen and resume at your last
-position with your current party XP/level and win/loss record intact. To
-force a fresh login, clear site data / local storage for
-`localhost:5173`, or use a private window.
+position with your current party XP/level, win/loss record, and inventory/
+currency/catches all intact. To force a fresh login, clear site data /
+local storage for `localhost:5173`, or use a private window.
 
 ### Environment variables (client)
 

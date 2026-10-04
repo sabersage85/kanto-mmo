@@ -41,14 +41,74 @@ especially).
   (`packages/server`).
 - **Deferred to a later milestone:** a capture/catch mechanic (so players
   can add wild creatures to their party) — not in this slice's scope; wild
-  battles currently only award XP.
+  battles currently only award XP. (Implemented in Milestone 2 below.)
 
-## Milestone 2 — Inventory & Items
+## Milestone 2 — Inventory & Items (done, this session)
 
-- Player inventory data model in `shared` (items, stacking, usage effects).
-- Basic item effects: healing, catching tools, stat boosts.
-- Server-authoritative inventory mutations (no client-trusted item counts).
-- Simple shop or item-pickup-on-map mechanic to acquire items.
+> Implemented out of listed order, ahead of Milestone 5 (Trading), since
+> trading items depends on an inventory existing first.
+
+- **Item data model** (`shared/src/items.ts`): 7 original items across
+  three categories — `heal` (Herb Wrap: restores 20 HP; Vitality Draught:
+  full heal), `capture` (Rusty Snare: catchPower 0.1; Reinforced Snare:
+  catchPower 0.35), and `boost` (Power Root/Guard Root/Focus Root: +40 EV
+  to attack/defense/speed respectively). Each has a price for the shop
+  below. `InventorySlot` (itemId + quantity) is the stacking unit; pure
+  helpers `addItemToInventory`/`removeItemFromInventory` in
+  `shared/src/inventory.ts` handle stacking/splitting with no mutation of
+  the input array.
+- **Catch mechanic** (`attemptCatch` in `shared/src/inventory.ts`):
+  `chance = 1 - hpRatio * (1 - catchPower)`, clamped to `[0, 1]`, where
+  `hpRatio = currentHp / maxHp`. This gives the two required boundary
+  behaviors for free: at full HP the chance equals the tool's raw
+  `catchPower` (e.g. 10% for the weak Rusty Snare), and at 0 HP the chance
+  is always 100% regardless of tool. The roll happens server-side in
+  `BattleRoom`; the item is consumed whether or not the catch succeeds
+  (standard genre convention, also closes a "spam-cancel to avoid cost"
+  exploit). On success the wild creature is added to the player's party if
+  it has room, otherwise to an overflow `storage` list (party cap: 6).
+- **Acquisition mechanic — shop tile (chosen over random pickups)**: a new
+  `shop` tile type on the test map (`route1.json`) sends the full item
+  catalog to the client when stepped on; the client shows a buy overlay
+  that deducts currency and adds the item server-side. Chosen over passive
+  pickups because it's simpler to make fully server-authoritative (no
+  "has this tile already been looted" state to track and persist) and
+  gives a natural hook for a later in-game economy. New players start with
+  300 currency and a small starter inventory (3 Herb Wrap, 2 Rusty Snare).
+- **Server-authoritative mutations**: all inventory/currency changes
+  (`sessionCache.ts`: `addInventoryItem`, `removeInventoryItem`,
+  `spendCurrency`, `addCurrency`, `addCreatureToPartyOrStorage`) happen
+  only in response to room-side logic, never trust client-sent quantities,
+  and persist via the Milestone 3 write-through pattern (new `currency`
+  column on `players`, new `inventory_items` and `storage_members` tables,
+  migration `drizzle/0002_same_bloodaxe.sql`).
+- **Item use is split by room context**: `OverworldRoom.useItem` handles
+  heal/boost on a chosen party creature (rejects capture items — "only
+  during a wild battle"); `BattleRoom.useItem` handles heal (on the
+  currently-battling creature) or capture-roll on the wild creature
+  (rejects boost items — "only outside of battle"). This keeps permanent
+  EV changes and in-battle consumables cleanly separated.
+- **Client**: an inventory panel overlay (`ui/inventoryPanel.ts`, toggled
+  with the `I` key) lists items/quantities with a target-creature picker
+  and Use button for heal/boost items; a shop overlay (`ui/shopOverlay.ts`)
+  appears automatically on the shop tile with Buy buttons and a live
+  currency readout; `BattleScene` gained an "Items" button opening an
+  inline capture/heal menu built from the same inventory snapshot.
+- Unit tests (vitest): 20 new tests in `shared` covering inventory add/
+  remove/stacking, heal/stat-boost application, and the catch-rate formula
+  edge cases (guaranteed catch at 0 HP regardless of tool; low-but-nonzero
+  chance at full HP with the weak tool; higher chance with the strong
+  tool) — plus new server-side round-trip tests for inventory/currency/
+  storage persistence and party-cap overflow in `memoryStore.test.ts` and
+  `sessionCache.test.ts` (117 total tests across `shared` + `server`, all
+  passing).
+- Manually verified end-to-end with a scripted Colyseus client: register →
+  walk to the shop tile → buy items → heal a party creature outside of
+  battle → trigger a wild encounter → attempt a catch at full HP with a
+  weak tool (failed, as expected) → attack once → attempt a catch at the
+  resulting lower HP (succeeded, creature added to party) → re-login and
+  confirm inventory, currency, and the newly-caught party member all
+  persisted.
 
 ## Milestone 3 — Persistence, Accounts & Auth (done, this session)
 
