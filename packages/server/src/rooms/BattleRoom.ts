@@ -1,4 +1,5 @@
 import colyseus from 'colyseus';
+import type { Client } from 'colyseus';
 const { Room } = colyseus;
 import {
   applyBattleExpGain,
@@ -14,12 +15,20 @@ import {
   type SpeciesDefinition,
 } from '@kanto-mmo/shared';
 import { BattleCreatureSchema, BattleLogEntrySchema, BattleState } from '../schema/BattleState.js';
+import { validateToken } from '../auth/authService.js';
+import { getPersistenceStore } from '../persistence/store.js';
 import { consumePendingEncounter } from '../pendingEncounters.js';
-import { getFirstAliveInstance, updatePartyMember } from '../playerRegistry.js';
+import { getFirstAliveInstance, loadSession, updatePartyMember } from '../sessionCache.js';
 
 interface BattleJoinOptions {
-  playerId?: string;
-  token?: string;
+  /** Session token issued by POST /auth/register or /auth/login. */
+  sessionToken?: string;
+  /** Single-use token identifying which wild encounter OverworldRoom rolled for this player. */
+  encounterToken?: string;
+}
+
+interface AuthData {
+  accountId: string;
 }
 
 const MAX_LOG_ENTRIES = 20;
@@ -31,36 +40,66 @@ const FLEE_SUCCESS_CHANCE = 0.75;
  * One-player-vs-one-wild-creature PvE battle room. Always created fresh
  * per encounter (never matchmade/shared) and only accepts the exact
  * species/level that OverworldRoom rolled server-side for this player's
- * token, so a modified client cannot choose an easier wild creature.
+ * encounter token, so a modified client cannot choose an easier wild
+ * creature.
  */
 export class BattleRoom extends Room<BattleState> {
   maxClients = 1;
 
-  private playerId = '';
+  private accountId = '';
   private playerSpecies!: SpeciesDefinition;
   private wildSpecies!: SpeciesDefinition;
   private playerBattle!: BattleCreatureState;
   private wildBattle!: BattleCreatureState;
   private partyInstance!: CreatureInstance;
 
-  onCreate(options: BattleJoinOptions): void {
-    const playerId = options.playerId;
-    const token = options.token;
+  async onAuth(_client: Client, options: BattleJoinOptions): Promise<AuthData> {
+    const accountId = options?.sessionToken ? await validateToken(options.sessionToken) : null;
+    if (!accountId) {
+      throw new Error('Invalid or expired session — please log in again.');
+    }
+    return { accountId };
+  }
 
-    if (!playerId || !token) {
-      this.disconnect();
-      return;
+  onCreate(): void {
+    // Battle state/log/message-handlers are set up in onJoin instead of
+    // here: Colyseus only passes the onAuth() result into onJoin, and we
+    // need the authenticated accountId before we can validate the
+    // encounter token / look up the player's party.
+  }
+
+  async onJoin(_client: Client, options: BattleJoinOptions, auth?: AuthData): Promise<void> {
+    if (!auth) {
+      throw new Error('Invalid or expired session — please log in again.');
+    }
+    const accountId = auth.accountId;
+    const encounterToken = options?.encounterToken;
+
+    if (!encounterToken) {
+      throw new Error('Missing encounter token.');
     }
 
-    const pending = consumePendingEncounter(token, playerId);
-    const partyInstance = pending ? getFirstAliveInstance(playerId) : undefined;
-    if (!pending || !partyInstance) {
-      // Invalid/forged/expired encounter token, or no usable party member.
-      this.disconnect();
-      return;
+    const pending = consumePendingEncounter(encounterToken, accountId);
+    if (!pending) {
+      throw new Error('This encounter has expired or was already used.');
     }
 
-    this.playerId = playerId;
+    // Loads from the live session cache if the player is already in the
+    // overworld (the common case); falls back to the persistence store if
+    // somehow not (shouldn't normally happen since OverworldRoom loads the
+    // session on join, before any encounter can be rolled).
+    await loadSession(getPersistenceStore(), accountId, 'Trainer', {
+      mapId: 'route1',
+      x: 0,
+      y: 0,
+      direction: 'down',
+    });
+    const partyInstance = getFirstAliveInstance(accountId);
+    if (!partyInstance) {
+      throw new Error('No usable party member to battle with.');
+    }
+
+    this.accountId = accountId;
     this.partyInstance = partyInstance;
     this.playerSpecies = getSpecies(partyInstance.speciesId);
     this.wildSpecies = getSpecies(pending.speciesId);
@@ -148,6 +187,7 @@ export class BattleRoom extends Room<BattleState> {
 
   private finishBattle(outcome: 'player_win' | 'wild_win'): void {
     this.state.status = outcome === 'player_win' ? 'won' : 'lost';
+    const store = getPersistenceStore();
 
     if (outcome === 'player_win') {
       const expResult = applyBattleExpGain(
@@ -156,7 +196,7 @@ export class BattleRoom extends Room<BattleState> {
         this.wildBattle.level,
         this.playerSpecies,
       );
-      updatePartyMember(this.playerId, expResult.instance);
+      updatePartyMember(this.accountId, expResult.instance, store);
       this.state.expGained = expResult.expGained;
       this.state.leveledUp = expResult.leveledUp;
       this.state.newLevel = expResult.newLevel;
@@ -165,7 +205,7 @@ export class BattleRoom extends Room<BattleState> {
           (expResult.leveledUp ? ` ${this.playerBattle.name} grew to level ${expResult.newLevel}!` : ''),
       );
     } else {
-      updatePartyMember(this.playerId, { ...this.partyInstance, currentHp: 0 });
+      updatePartyMember(this.accountId, { ...this.partyInstance, currentHp: 0 }, store);
       this.pushLog(`${this.playerBattle.name} fainted! You black out and stumble back to safety...`);
     }
 

@@ -6,20 +6,25 @@ import { isWalkable, rollEncounter } from '@kanto-mmo/shared';
 import { OverworldState, PlayerSchema } from '../schema/OverworldState.js';
 import { loadMap } from '../mapLoader.js';
 import { ROUTE1_ENCOUNTERS } from '../data/encounters.js';
-import { getOrCreatePlayer } from '../playerRegistry.js';
+import { validateToken } from '../auth/authService.js';
+import { getPersistenceStore } from '../persistence/store.js';
 import { createPendingEncounter } from '../pendingEncounters.js';
+import { flushSession, getSession, loadSession, updatePosition } from '../sessionCache.js';
 
 interface JoinOptions {
-  name?: string;
-  /** Client-generated id (persisted in localStorage) identifying this player across rooms/sessions. */
-  playerId?: string;
+  /** Session token issued by POST /auth/register or /auth/login. */
+  token?: string;
+}
+
+interface AuthData {
+  accountId: string;
 }
 
 /** A single shared-world room tracking every connected player's position on one map. */
 export class OverworldRoom extends Room<OverworldState> {
   maxClients = 64;
   private map!: MapDefinition;
-  private playerIds = new Map<string, string>();
+  private accountIds = new Map<string, string>();
   /** Sessions currently off in a BattleRoom; movement/encounters are suppressed for them. */
   private inBattle = new Set<string>();
 
@@ -39,24 +44,60 @@ export class OverworldRoom extends Room<OverworldState> {
     });
   }
 
-  onJoin(client: Client, options: JoinOptions): void {
-    const player = new PlayerSchema();
-    player.id = client.sessionId;
-    player.name = options?.name?.slice(0, 16) || `Trainer${client.sessionId.slice(0, 4)}`;
-    player.x = this.map.spawn.x;
-    player.y = this.map.spawn.y;
-    player.direction = 'down';
-    this.state.players.set(client.sessionId, player);
-
-    const playerId = options?.playerId || client.sessionId;
-    this.playerIds.set(client.sessionId, playerId);
-    getOrCreatePlayer(playerId, player.name);
+  async onAuth(_client: Client, options: JoinOptions): Promise<AuthData> {
+    const accountId = options?.token ? await validateToken(options.token) : null;
+    if (!accountId) {
+      throw new Error('Invalid or expired session — please log in again.');
+    }
+    return { accountId };
   }
 
-  onLeave(client: Client): void {
+  async onJoin(client: Client, _options: JoinOptions, auth?: AuthData): Promise<void> {
+    if (!auth) {
+      throw new Error('Invalid or expired session — please log in again.');
+    }
+    const store = getPersistenceStore();
+    const session = await loadSession(store, auth.accountId, `Trainer${client.sessionId.slice(0, 4)}`, {
+      mapId: this.map.id,
+      x: this.map.spawn.x,
+      y: this.map.spawn.y,
+      direction: 'down',
+    });
+
+    const player = new PlayerSchema();
+    player.id = client.sessionId;
+    player.name = session.name;
+    player.x = session.x;
+    player.y = session.y;
+    player.direction = session.direction;
+    this.state.players.set(client.sessionId, player);
+
+    this.accountIds.set(client.sessionId, auth.accountId);
+  }
+
+  async onLeave(client: Client, consented: boolean): Promise<void> {
+    const accountId = this.accountIds.get(client.sessionId);
+
+    if (!consented) {
+      try {
+        // Grace window for a dropped connection / accidental tab reload to
+        // resume the SAME room seat without losing state or appearing to
+        // other players as a rejoin. Only on timeout/failure do we treat
+        // this as a real departure (flush + remove below).
+        await this.allowReconnection(client, 30);
+        return;
+      } catch {
+        // fell through — reconnection window expired, handle as a real leave.
+      }
+    }
+
     this.state.players.delete(client.sessionId);
-    this.playerIds.delete(client.sessionId);
+    this.accountIds.delete(client.sessionId);
     this.inBattle.delete(client.sessionId);
+
+    if (accountId) {
+      await flushSession(accountId, getPersistenceStore());
+    }
   }
 
   /** Validates and applies a single-tile movement request from a client. */
@@ -86,6 +127,11 @@ export class OverworldRoom extends Room<OverworldState> {
     player.x = nextX;
     player.y = nextY;
 
+    const accountId = this.accountIds.get(client.sessionId);
+    if (accountId && getSession(accountId)) {
+      updatePosition(accountId, this.map.id, nextX, nextY, player.direction, getPersistenceStore());
+    }
+
     this.maybeTriggerEncounter(client, nextX, nextY);
   }
 
@@ -97,12 +143,11 @@ export class OverworldRoom extends Room<OverworldState> {
     const roll = rollEncounter(ROUTE1_ENCOUNTERS);
     if (!roll) return;
 
-    const playerId = this.playerIds.get(client.sessionId);
-    if (!playerId) return;
+    const accountId = this.accountIds.get(client.sessionId);
+    if (!accountId) return;
 
     this.inBattle.add(client.sessionId);
-    const token = createPendingEncounter(playerId, roll.speciesId, roll.level);
+    const token = createPendingEncounter(accountId, roll.speciesId, roll.level);
     client.send('encounterStart', { token, speciesId: roll.speciesId, level: roll.level });
   }
 }
-

@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import type { MapDefinition, MoveInput } from '@kanto-mmo/shared';
 import type { Room } from 'colyseus.js';
-import { fetchMap, joinOverworld } from '../net.js';
+import { clearStoredSession, fetchMap, joinOverworld } from '../net.js';
 
 /** Placeholder colors standing in for real tile art (no copied assets). */
 const TILE_COLORS: Record<string, number> = {
@@ -38,16 +38,20 @@ interface EncounterStartMessage {
   level: number;
 }
 
-/** Data passed back in when resuming this scene after a battle ends. */
+/** Data passed back in when resuming this scene after a battle ends, or in on first boot from main.ts. */
 interface OverworldResumeData {
   room?: Room;
   map?: MapDefinition;
+  /** Present on first boot (from main.ts) and when resuming after a battle; absent only if something went wrong. */
+  sessionToken?: string;
+  name?: string;
 }
 
 export class OverworldScene extends Phaser.Scene {
   private map!: MapDefinition;
   private room!: Room;
   private resumeData: OverworldResumeData = {};
+  private sessionToken = '';
   private playerVisuals = new Map<string, PlayerVisual>();
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
@@ -69,6 +73,7 @@ export class OverworldScene extends Phaser.Scene {
 
   async create(): Promise<void> {
     this.playerVisuals = new Map();
+    this.sessionToken = this.resumeData.sessionToken ?? '';
 
     if (this.resumeData.room && this.resumeData.map) {
       this.room = this.resumeData.room;
@@ -78,10 +83,20 @@ export class OverworldScene extends Phaser.Scene {
         color: '#ffffff',
         fontFamily: 'monospace',
       });
+
+      if (!this.sessionToken) {
+        this.handleAuthFailure('No session found — please log in again.');
+        return;
+      }
+
       this.map = (await fetchMap('route1')) as MapDefinition;
-      const name = `Trainer${Math.floor(Math.random() * 10000)}`;
-      this.room = await joinOverworld(name);
-      statusText.setText(`Connected as ${name}`);
+      try {
+        this.room = await joinOverworld(this.sessionToken);
+      } catch (err) {
+        this.handleAuthFailure(err instanceof Error ? err.message : 'Failed to connect.');
+        return;
+      }
+      statusText.setText(`Connected as ${this.resumeData.name ?? 'Trainer'}`);
     }
 
     this.drawMap();
@@ -111,7 +126,12 @@ export class OverworldScene extends Phaser.Scene {
       });
 
       this.room.onMessage('encounterStart', (message: EncounterStartMessage) => {
-        this.scene.start('battle', { token: message.token, overworldRoom: this.room, map: this.map });
+        this.scene.start('battle', {
+          encounterToken: message.token,
+          sessionToken: this.sessionToken,
+          overworldRoom: this.room,
+          map: this.map,
+        });
       });
     }
 
@@ -135,6 +155,18 @@ export class OverworldScene extends Phaser.Scene {
 
     this.lastMoveAt = time;
     this.room.send('move', input);
+  }
+
+  /**
+   * Invalid/expired session token (e.g. an old cached session after a
+   * server restart with a fresh in-memory store, or a token that outlived
+   * its TTL). Clears the stale session and reloads the page, which brings
+   * the login/register overlay in main.ts back up.
+   */
+  private handleAuthFailure(reason: string): void {
+    clearStoredSession();
+    this.add.text(16, 16, `${reason}\nReloading...`, { color: '#ff6b6b', fontFamily: 'monospace' });
+    this.time.delayedCall(1200, () => window.location.reload());
   }
 
   private readMovementInput(): MoveInput {

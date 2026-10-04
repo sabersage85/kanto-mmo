@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kanto-mmo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kanto
+      POSTGRES_PASSWORD: kanto
+      POSTGRES_DB: kanto_mmo
+    ports:
+      - '5432:5432'
+    volumes:
+      - kanto-mmo-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  kanto-mmo-postgres-data:

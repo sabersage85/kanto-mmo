@@ -30,7 +30,8 @@ interface NetworkedBattleState {
 }
 
 export interface BattleSceneData {
-  token: string;
+  encounterToken: string;
+  sessionToken: string;
   overworldRoom: Room;
   map: MapDefinition;
 }
@@ -112,7 +113,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.fleeButton = this.makeButton(420, 320, 'Flee', () => this.room.send('flee'));
 
-    this.room = await createBattle(this.sceneData.token);
+    this.room = await createBattle(this.sceneData.sessionToken, this.sceneData.encounterToken);
     this.room.onStateChange((state: NetworkedBattleState) => this.renderState(state));
   }
 
@@ -190,7 +191,11 @@ export class BattleScene extends Phaser.Scene {
 
     this.sceneData.overworldRoom.send('battleEnded');
     this.time.delayedCall(RESULT_DELAY_MS, () => {
-      this.scene.start('overworld', { room: this.sceneData.overworldRoom, map: this.sceneData.map });
+      this.scene.start('overworld', {
+        room: this.sceneData.overworldRoom,
+        map: this.sceneData.map,
+        sessionToken: this.sceneData.sessionToken,
+      });
     });
   }
 }

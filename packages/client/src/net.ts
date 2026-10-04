@@ -2,31 +2,83 @@ import { Client, Room } from 'colyseus.js';
 
 const SERVER_WS_URL = import.meta.env.VITE_SERVER_WS_URL ?? 'ws://localhost:2567';
 const SERVER_HTTP_URL = import.meta.env.VITE_SERVER_HTTP_URL ?? 'http://localhost:2567';
-const PLAYER_ID_STORAGE_KEY = 'kanto-mmo-player-id';
+const SESSION_STORAGE_KEY = 'kanto-mmo-session';
 
 export const colyseusClient = new Client(SERVER_WS_URL);
 
-/**
- * Stable per-browser player id, used (without real accounts/auth yet) to
- * look up the same in-memory party across the overworld and battle rooms.
- * See packages/server/src/playerRegistry.ts for the server-side half.
- */
-export function getOrCreatePlayerId(): string {
-  let id = localStorage.getItem(PLAYER_ID_STORAGE_KEY);
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem(PLAYER_ID_STORAGE_KEY, id);
+/** Session token + display name cached in localStorage so a page reload doesn't force a re-login. */
+export interface StoredSession {
+  token: string;
+  name: string;
+  /** ISO timestamp; checked client-side purely to skip an obviously-expired token, not for security. */
+  expiresAt: string;
+}
+
+interface AuthSuccessResponse {
+  token: string;
+  expiresAt: string;
+  name: string;
+}
+
+interface AuthErrorResponse {
+  error: string;
+}
+
+export function getStoredSession(): StoredSession | null {
+  const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+  if (!raw) return null;
+
+  try {
+    const session = JSON.parse(raw) as StoredSession;
+    if (new Date(session.expiresAt).getTime() <= Date.now()) {
+      clearStoredSession();
+      return null;
+    }
+    return session;
+  } catch {
+    return null;
   }
-  return id;
 }
 
-export async function joinOverworld(playerName: string): Promise<Room> {
-  return colyseusClient.joinOrCreate('overworld', { name: playerName, playerId: getOrCreatePlayerId() });
+export function clearStoredSession(): void {
+  localStorage.removeItem(SESSION_STORAGE_KEY);
 }
 
-/** Creates a fresh, private 1-player battle room for a server-issued encounter token. */
-export async function createBattle(token: string): Promise<Room> {
-  return colyseusClient.create('battle', { playerId: getOrCreatePlayerId(), token });
+function storeSession(response: AuthSuccessResponse): StoredSession {
+  const session: StoredSession = { token: response.token, name: response.name, expiresAt: response.expiresAt };
+  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  return session;
+}
+
+async function postAuth(path: string, body: unknown): Promise<AuthSuccessResponse> {
+  const res = await fetch(`${SERVER_HTTP_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json()) as AuthSuccessResponse | AuthErrorResponse;
+  if (!res.ok) throw new Error('error' in data ? data.error : 'Authentication failed.');
+  return data as AuthSuccessResponse;
+}
+
+export async function register(email: string, password: string, name?: string): Promise<StoredSession> {
+  const result = await postAuth('/auth/register', { email, password, name });
+  return storeSession(result);
+}
+
+export async function login(email: string, password: string): Promise<StoredSession> {
+  const result = await postAuth('/auth/login', { email, password });
+  return storeSession(result);
+}
+
+/** Joins (or, on first connection, creates) the shared overworld room, authenticated by session token. */
+export async function joinOverworld(sessionToken: string): Promise<Room> {
+  return colyseusClient.joinOrCreate('overworld', { token: sessionToken });
+}
+
+/** Creates a fresh, private 1-player battle room for a server-issued single-use encounter token. */
+export async function createBattle(sessionToken: string, encounterToken: string): Promise<Room> {
+  return colyseusClient.create('battle', { sessionToken, encounterToken });
 }
 
 export async function fetchMap(mapId: string): Promise<unknown> {
@@ -34,4 +86,3 @@ export async function fetchMap(mapId: string): Promise<unknown> {
   if (!res.ok) throw new Error(`Failed to load map "${mapId}": ${res.status}`);
   return res.json();
 }
-

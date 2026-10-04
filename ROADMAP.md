@@ -50,13 +50,47 @@ especially).
 - Server-authoritative inventory mutations (no client-trusted item counts).
 - Simple shop or item-pickup-on-map mechanic to acquire items.
 
-## Milestone 3 — Persistence, Accounts & Auth
+## Milestone 3 — Persistence, Accounts & Auth (done, this session)
 
-- Pick a database (likely PostgreSQL via an ORM, or MongoDB) for durable
-  player accounts, parties, inventories, and world state.
-- Authentication (email/password or OAuth) with session tokens handed to
-  the Colyseus client on join.
-- Reconnect flow: a disconnected player's state is preserved and restored.
+- **Database**: PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/) +
+  the `postgres` (postgres.js) driver — chosen over Prisma specifically to
+  avoid Prisma's native query-engine binary download step, and over
+  MongoDB since the data (accounts/sessions/party members) is cleanly
+  relational. See the README's "Database choice & rationale" section for
+  the full writeup.
+- **Accounts**: email/password registration and login
+  (`packages/server/src/auth/authService.ts`), passwords hashed with
+  Node's built-in `scrypt` (`auth/password.ts`, no extra native
+  dependency), opaque random session tokens with a 7-day TTL
+  (`auth/tokens.ts`).
+- **Persistence**: a `PersistenceStore` interface
+  (`persistence/types.ts`) with two implementations — `DrizzlePostgresStore`
+  for production and `InMemoryPersistenceStore` for tests / a zero-setup
+  local-dev fallback (auto-selected when `DATABASE_URL` is unset). Stores
+  account identity, party (creatures/levels/XP/moves/current HP), and last
+  known position/map.
+- **Session cache** (`sessionCache.ts`, replacing Milestone 1's
+  `playerRegistry.ts`): a live in-memory cache fronting the persistence
+  store, write-through on every position/party change so gameplay stays
+  fast while nothing is ever lost.
+- **Reconnect flow**: both `OverworldRoom` and `BattleRoom` authenticate
+  joins via `onAuth` + a session token (instead of a client-supplied
+  player id); `OverworldRoom` grants a 30-second Colyseus
+  `allowReconnection` grace window on an ungraceful disconnect so a
+  network blip / tab reload resumes the same room seat, and a full
+  re-login always resumes from the durably-saved position/party either
+  way.
+- **Client**: a DOM-based login/register overlay (`ui/authOverlay.ts`)
+  gates game startup; the session token is cached in `localStorage` so a
+  page reload skips straight back into the overworld until the token
+  expires.
+- Unit tests (vitest) for the in-memory persistence store, the auth
+  service (register/login/token validation, including duplicate-email and
+  expired-token cases), and the session cache (load/create, party/position
+  write-through, flush) — all run against `InMemoryPersistenceStore`, no
+  live database required in CI.
+- **Deferred to a later milestone:** inventory persistence (there's no
+  inventory system yet — that's Milestone 2 above); OAuth login.
 
 ## Milestone 4 — PvP Battles
 

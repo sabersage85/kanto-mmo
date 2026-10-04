@@ -19,11 +19,11 @@ a single-player cartridge game. Long term, the game will feature:
   original equivalent).
 - PvP battles and trading between players.
 
-This milestone builds on the foundation slice with **wild encounters and
-turn-based PvE battles**: step onto a grass tile and you may be dropped into
-a battle against a wild creature, fight it turn-by-turn with your starter
-creature, and win XP (or lose and return to the overworld) — all resolved
-authoritatively on the server.
+This milestone builds on wild encounters/PvE battles with **persistence,
+accounts, and auth**: players now register/log in with an email + password,
+their trainer identity, party (creatures/levels/XP/moves), inventory, and
+last known position/map are durably saved, and reconnecting after a dropped
+connection resumes exactly where they left off.
 
 ## Asset & Legal Policy
 
@@ -76,9 +76,14 @@ packages/
             wild encounters on grass tiles, and broadcasts state to all
             clients in real time. A BattleRoom resolves one-player-vs-one-
             wild-creature PvE battles (turn order, damage, win/loss, XP
-            award). Also exposes a small Express HTTP API (health check +
-            map data fetch). Has its own vitest suite.
-  client/   Phaser 3 + Vite web client. Connects to the Colyseus server,
+            award). A Drizzle/PostgreSQL-backed persistence layer durably
+            stores accounts, sessions, and each player's party/position,
+            fronted by a write-through in-memory cache for low-latency
+            reads during gameplay. Also exposes a small Express HTTP API
+            (health check, map data fetch, /auth/register, /auth/login).
+            Has its own vitest suite.
+  client/   Phaser 3 + Vite web client. Shows a DOM login/register overlay
+            before connecting, then connects to the Colyseus server,
             renders the map as colored tiles and each player as a colored
             square, sends movement input from arrow keys / WASD, and shows
             a placeholder-art BattleScene (HP bars, move buttons, battle
@@ -88,16 +93,24 @@ packages/
 ```mermaid
 flowchart LR
   subgraph Client [packages/client - Phaser + Vite]
-    A[OverworldScene] -- WS: move --> B((Colyseus Room))
+    Z[Login/Register overlay] -- HTTP: /auth/register, /auth/login --> G
+    Z -- resolves with session token --> A[OverworldScene]
+    A -- WS join w/ token --> B((Colyseus Room))
     A -- WS: encounterStart --> E[BattleScene]
-    E -- WS: selectMove / flee --> F((BattleRoom))
+    E -- WS join w/ token --> F((BattleRoom))
+    E -- WS: selectMove / flee --> F
     A -- HTTP: GET /maps/:id --> C[Express]
   end
   subgraph Server [packages/server - Colyseus + Express]
-    B[OverworldRoom] -- broadcasts state --> A
+    G[authService.ts] --> H[(Postgres via Drizzle\nor in-memory fallback)]
+    B[OverworldRoom] -- onAuth: validateToken --> G
+    B -- broadcasts state --> A
     B -- rolls encounter, issues token --> F
+    F -- onAuth: validateToken --> G
     F -- broadcasts battle state --> E
     C --> D[mapLoader.ts]
+    B <-. write-through .-> I[sessionCache.ts]
+    I <--> H
   end
   Shared[packages/shared: types + formulas + battle logic] -.-> Client
   Shared -.-> Server
@@ -109,19 +122,102 @@ like, or how damage/XP/turn order is calculated — there is exactly one
 implementation of each formula, imported by both sides. The server never
 trusts a client-chosen wild species/level for a battle: `OverworldRoom`
 rolls the encounter and hands the client a single-use token that
-`BattleRoom` validates before building battle state.
+`BattleRoom` validates before building battle state. Likewise, neither room
+trusts a client-supplied identity: every join is authenticated via a
+server-issued session token (`onAuth` → `validateToken`), and the resulting
+`accountId` is the only identity used to load/save a player's party and
+position.
 
 ### Tech stack
 
 - **TypeScript** everywhere, npm workspaces monorepo.
 - **Client**: [Phaser 3](https://phaser.io/) for 2D tile rendering and input,
   [Vite](https://vitejs.dev/) for dev server/bundling, `colyseus.js` for
-  networking.
+  networking, plus a small DOM-based login/register overlay (no extra UI
+  framework needed for this).
 - **Server**: [Colyseus](https://colyseus.io/) for authoritative real-time
-  room state sync, Express for simple REST endpoints (health, map data).
+  room state sync, Express for simple REST endpoints (health, map data,
+  auth), [Drizzle ORM](https://orm.drizzle.team/) + `postgres` (postgres.js)
+  for persistence, Node's built-in `crypto.scrypt` for password hashing.
 - **Shared**: plain TypeScript types + pure functions, tested with
   [Vitest](https://vitest.dev/).
 - **Lint/format**: ESLint (`@typescript-eslint`) + Prettier.
+
+### Database choice & rationale
+
+**PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/)** (not Prisma,
+not MongoDB). Why:
+
+- The relational shape here (accounts → sessions, accounts → one player →
+  many party members) maps cleanly onto normalized tables with foreign
+  keys; there's no document-shaped data that would benefit from MongoDB's
+  schema flexibility.
+- Drizzle + the `postgres` driver are **pure JavaScript/TypeScript with no
+  native binaries or code-generation step**. Prisma requires downloading a
+  platform-specific native query-engine binary during `prisma generate` /
+  install, which is a real reliability risk in sandboxed, offline, or
+  locked-down CI/dev environments — Drizzle has no equivalent step.
+- Drizzle's migrations are plain, reviewable `.sql` files generated from a
+  TypeScript schema (`packages/server/src/db/schema.ts`), which keeps the
+  schema readable and diffable in PRs.
+- A `PersistenceStore` interface (`packages/server/src/persistence/types.ts`)
+  decouples all game/auth logic from Drizzle/Postgres specifically: a
+  zero-dependency `InMemoryPersistenceStore` implements the exact same
+  contract, so **unit tests and a no-setup local dev run never require a
+  live database** — the server automatically falls back to the in-memory
+  store (with a console warning) whenever `DATABASE_URL` isn't set.
+
+## Database Setup
+
+By default (no `DATABASE_URL` set) the server runs against an **in-memory
+store** — zero setup, but all accounts/parties/positions are lost on
+restart. For durable storage, run Postgres locally via Docker:
+
+### 1. Start Postgres
+
+```sh
+docker compose up -d
+```
+
+This starts a `postgres:16-alpine` container (`docker-compose.yml` at the
+repo root) on `localhost:5432` with user/password/db `kanto`/`kanto`/
+`kanto_mmo`.
+
+### 2. Configure the server's environment
+
+```sh
+cp packages/server/.env.example packages/server/.env
+```
+
+The default `.env.example` already matches the docker-compose credentials
+above; edit `DATABASE_URL` if you're pointing at a different Postgres
+instance.
+
+### 3. Run migrations
+
+```sh
+npm run db:migrate -w packages/server
+```
+
+This applies `packages/server/drizzle/*.sql` (generated from
+`packages/server/src/db/schema.ts`) to create the `accounts`, `sessions`,
+`players`, and `party_members` tables. If you change the schema later,
+regenerate the migration first with:
+
+```sh
+npm run db:generate -w packages/server
+```
+
+### 4. Start the server as usual
+
+```sh
+npm run dev:server
+```
+
+With `DATABASE_URL` set (via the `.env` file, loaded automatically), the
+server now persists everything to Postgres instead of memory. Restarting
+the server — or reconnecting from a different machine — resumes exactly
+where a player left off.
 
 ## Running Locally
 
@@ -163,26 +259,37 @@ npm run dev:client
 
 This starts the Vite dev server (default `http://localhost:5173`).
 
-### 5. Test local multiplayer
+### 5. Register an account and test local multiplayer
 
 Open `http://localhost:5173` in **two separate browser tabs** (or two
-different browsers). Each tab joins the same `overworld` room as a
-different trainer with a random name. Move one tab's player with the
-**arrow keys or WASD** and you should see its colored square move in the
-*other* tab in real time, and vice versa.
+different browsers). Each tab shows a login/register overlay first —
+register a new account in each tab (they need different emails), then
+you'll be dropped into the shared `overworld` room as your trainer. Move
+one tab's player with the **arrow keys or WASD** and you should see its
+colored square move in the *other* tab in real time, and vice versa.
 
 Movement is validated on the server: a player cannot walk through trees or
 water tiles, even if a modified client tries to send bad input.
 
 ### 6. Trigger a wild encounter
 
-Every player automatically gets a level-5 starter creature (in-memory only,
-no persistence yet — see [ROADMAP.md](./ROADMAP.md) Milestone 3). Walk onto
-any **grass** tile and there's a chance (server-rolled) of being dropped
-into a battle against a random wild creature. Pick a move each turn; when
-the battle ends (win, loss, or a successful flee) you're returned to the
+Registering creates a level-5 starter creature for your account,
+**persisted** to the database (or the in-memory store if `DATABASE_URL`
+isn't set — see [Database Setup](#database-setup) above). Walk onto any
+**grass** tile and there's a chance (server-rolled) of being dropped into a
+battle against a random wild creature. Pick a move each turn; when the
+battle ends (win, loss, or a successful flee) you're returned to the
 overworld automatically. Winning awards XP and may level up your creature
 (which also fully heals it).
+
+### 7. Test reconnect / persistence
+
+Close the browser tab (or just reload it) after moving around and winning
+a battle, then reopen `http://localhost:5173`. The cached session token in
+`localStorage` lets you skip the login screen and resume at your last
+position with your current party XP/level intact. To force a fresh login,
+clear site data / local storage for `localhost:5173`, or use a private
+window.
 
 ### Environment variables (client)
 
@@ -197,5 +304,5 @@ VITE_SERVER_HTTP_URL=http://your-server:2567
 ## What's in this milestone vs. what's next
 
 See [ROADMAP.md](./ROADMAP.md) for the planned sequence of future
-milestones (battles, inventory, PvP, trading, gyms/progression,
-persistence, and larger world content).
+milestones (inventory, PvP, trading, gyms/progression, and larger world
+content).
