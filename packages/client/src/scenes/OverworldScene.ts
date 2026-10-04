@@ -37,6 +37,7 @@ interface NetworkedPlayer {
   name: string;
   wins: number;
   losses: number;
+  badgeCount: number;
   onChange(callback: () => void): void;
 }
 
@@ -130,6 +131,32 @@ interface PvpBattleStartMessage {
   opponentName: string;
 }
 
+interface TrainerInfo {
+  id: string;
+  name: string;
+  themeType: string;
+  position: { x: number; y: number };
+  badgeName: string;
+  defeated: boolean;
+}
+
+interface TrainersInfoMessage {
+  trainers: TrainerInfo[];
+}
+
+interface TrainerBattleStartMessage {
+  token: string;
+  trainerId: string;
+}
+
+/** Distinct placeholder shape colors per trainer theme type (no copied assets). */
+const TRAINER_THEME_COLORS: Record<string, number> = {
+  Rock: 0x8a7a5c,
+  Water: 0x2a9fd6,
+  Fire: 0xe0552b,
+};
+const TRAINER_DEFEATED_COLOR = 0x555555;
+
 /** Data passed back in when resuming this scene after a battle ends, or in on first boot from main.ts. */
 interface OverworldResumeData {
   room?: Room;
@@ -163,6 +190,9 @@ export class OverworldScene extends Phaser.Scene {
   private inventoryKey!: Phaser.Input.Keyboard.Key;
   /** Tracks which side of the active trade we are, so incoming `tradeUpdate` broadcasts can be mapped to "mine"/"theirs". */
   private activeTradeIsSideA = false;
+  private trainerVisuals = new Map<string, PlayerVisual>();
+  private trainerInfoById = new Map<string, TrainerInfo>();
+  private badgeText!: Phaser.GameObjects.Text;
 
 
   constructor() {
@@ -175,6 +205,7 @@ export class OverworldScene extends Phaser.Scene {
 
   async create(): Promise<void> {
     this.playerVisuals = new Map();
+    this.trainerVisuals = new Map();
     this.sessionToken = this.resumeData.sessionToken ?? '';
 
     if (this.resumeData.room && this.resumeData.map) {
@@ -208,6 +239,17 @@ export class OverworldScene extends Phaser.Scene {
       fontFamily: 'monospace',
       fontSize: '12px',
     });
+
+    this.badgeText = this.add.text(16, 50, '', {
+      color: '#b388ff',
+      fontFamily: 'monospace',
+      fontSize: '12px',
+    });
+
+    // (Re)create trainer NPC visuals every time this scene is (re)created,
+    // mirroring player visuals, since this.trainerInfoById already holds
+    // the latest `trainersInfo` snapshot across a battle round-trip.
+    this.trainerInfoById.forEach((trainer) => this.registerTrainerVisual(trainer));
 
     // (Re)create a visual for every player already known to the room,
     // since Phaser destroys this scene's game objects whenever we leave
@@ -268,6 +310,26 @@ export class OverworldScene extends Phaser.Scene {
           sessionToken: this.sessionToken,
           overworldRoom: this.room,
           map: this.map,
+        });
+      });
+
+      this.room.onMessage('trainersInfo', (message: TrainersInfoMessage) => {
+        for (const trainer of message.trainers) {
+          this.trainerInfoById.set(trainer.id, trainer);
+          this.registerTrainerVisual(trainer);
+        }
+      });
+
+      this.room.onMessage('trainerBattleStart', (message: TrainerBattleStartMessage) => {
+        hideInventoryPanel();
+        hideShopOverlay();
+        hideTradePanel();
+        this.scene.start('trainerBattle', {
+          trainerBattleToken: message.token,
+          sessionToken: this.sessionToken,
+          overworldRoom: this.room,
+          map: this.map,
+          inventory: this.inventory,
         });
       });
 
@@ -459,12 +521,16 @@ export class OverworldScene extends Phaser.Scene {
       const { x, y } = this.tileToWorld(player.x, player.y);
       v.rect.setPosition(x, y);
       v.label.setPosition(x, y - 24);
-      if (isLocal) this.recordText.setText(`Record: ${player.wins}W / ${player.losses}L`);
+      if (isLocal) {
+        this.recordText.setText(`Record: ${player.wins}W / ${player.losses}L`);
+        this.badgeText.setText(`Badges: ${player.badgeCount}`);
+      }
     });
 
     if (isLocal) {
       this.cameras.main.startFollow(visual.rect, true);
       this.recordText.setText(`Record: ${player.wins}W / ${player.losses}L`);
+      this.badgeText.setText(`Badges: ${player.badgeCount}`);
     } else {
       // Click a remote player to send them a PvP challenge (Milestone 4).
       visual.rect.setInteractive({ useHandCursor: true });
@@ -477,6 +543,32 @@ export class OverworldScene extends Phaser.Scene {
         }
       });
     }
+  }
+
+  /** Draws/refreshes one NPC trainer's placeholder shape (diamond, themed color) and label; grays out once defeated. */
+  private registerTrainerVisual(trainer: TrainerInfo): void {
+    const existing = this.trainerVisuals.get(trainer.id);
+    if (existing) {
+      existing.rect.destroy();
+      existing.label.destroy();
+    }
+
+    const { tileSize } = this.map;
+    const { x, y } = this.tileToWorld(trainer.position.x, trainer.position.y);
+    const color = trainer.defeated ? TRAINER_DEFEATED_COLOR : TRAINER_THEME_COLORS[trainer.themeType] ?? 0xffffff;
+    const rect = this.add
+      .rectangle(x, y, tileSize * 0.8, tileSize * 0.8, color)
+      .setAngle(45)
+      .setStrokeStyle(2, 0x000000);
+    const label = this.add
+      .text(x, y - 26, trainer.defeated ? `${trainer.name} (defeated)` : trainer.name, {
+        color: '#ffffff',
+        fontSize: '10px',
+        fontFamily: 'monospace',
+      })
+      .setOrigin(0.5);
+
+    this.trainerVisuals.set(trainer.id, { rect, label });
   }
 
   /** Brief on-screen notice for challenge errors/declines — auto-clears after a couple seconds. */

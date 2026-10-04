@@ -19,6 +19,8 @@ export interface SessionRecord {
   storage: CreatureInstance[];
   inventory: InventorySlot[];
   currency: number;
+  /** Badge ids earned from defeating NPC trainers (Milestone 6). */
+  badges: string[];
 }
 
 /**
@@ -66,6 +68,7 @@ export async function loadSession(
         storage: [],
         inventory: createStarterInventory(),
         currency: STARTER_CURRENCY,
+        badges: [],
       };
 
   cache.set(accountId, record);
@@ -137,6 +140,36 @@ export function recordBattleResult(
   });
 
   return { wins: record.wins, losses: record.losses };
+}
+
+/** Returns true if this account has already earned the given trainer's badge (Milestone 6). */
+export function hasBadge(accountId: string, badgeId: string): boolean {
+  return cache.get(accountId)?.badges.includes(badgeId) ?? false;
+}
+
+export function getBadges(accountId: string): string[] {
+  return cache.get(accountId)?.badges ?? [];
+}
+
+/**
+ * Idempotently records a trainer badge as earned: updates the cache
+ * immediately and write-throughs to the store (which itself de-dupes via
+ * a unique index, so a race between two calls can never award it twice).
+ * Returns the full, de-duplicated badge list.
+ */
+export function awardBadge(accountId: string, badgeId: string, store: PersistenceStore): string[] {
+  const record = cache.get(accountId);
+  if (!record) return [];
+  if (!record.badges.includes(badgeId)) {
+    record.badges = [...record.badges, badgeId];
+  }
+
+  void store.awardBadge(accountId, badgeId).catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(`[sessionCache] failed to persist badge for ${accountId}:`, err);
+  });
+
+  return record.badges;
 }
 
 /** Awaited, synchronous flush of the cached record to the store — used when a player fully disconnects. */

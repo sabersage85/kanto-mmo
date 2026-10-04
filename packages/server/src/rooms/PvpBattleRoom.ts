@@ -4,6 +4,7 @@ const { Room } = colyseus;
 import {
   creatureInstanceToBattleState,
   getSpecies,
+  reviveToFullInstance,
   type BattleCreatureState,
   type CreatureInstance,
   type MoveResult,
@@ -259,14 +260,20 @@ export class PvpBattleRoom extends Room<PvpBattleState> {
     const winnerSide: PvpSide = outcome === 'challenger_win' ? 'challenger' : 'opponent';
     const loserSide: PvpSide = winnerSide === 'challenger' ? 'opponent' : 'challenger';
 
-    // Persist final HP back to each side's party, same convention as PvE: a
-    // loss leaves the creature at 0 HP, a win reflects whatever damage it took.
+    // Persist final HP back to each side's party. The winner reflects whatever damage it
+    // took; the loser is auto-healed back to full (same "stumble back to safety" blackout
+    // convention as PvE — healing items can't revive a fainted creature, so leaving a loser
+    // at 0 HP would permanently soft-lock a player with only one party member).
     for (const side of ['challenger', 'opponent'] as PvpSide[]) {
       const accountId = this.accountIdsBySide[side];
       const partyInstance = this.partyInstanceBySide[side];
       if (!accountId || !partyInstance) continue;
       const finalHp = side === 'challenger' ? this.match.challenger.currentHp : this.match.opponent.currentHp;
-      updatePartyMember(accountId, { ...partyInstance, currentHp: Math.max(0, finalHp) }, store);
+      const persisted =
+        side === winnerSide
+          ? { ...partyInstance, currentHp: Math.max(0, finalHp) }
+          : reviveToFullInstance(partyInstance, getSpecies(partyInstance.speciesId));
+      updatePartyMember(accountId, persisted, store);
     }
 
     const winnerAccountId = this.accountIdsBySide[winnerSide];

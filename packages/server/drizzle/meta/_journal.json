@@ -22,6 +22,13 @@
       "when": 1791076464997,
       "tag": "0002_same_bloodaxe",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791078968161,
+      "tag": "0003_handy_absorbing_man",
+      "breakpoints": true
     }
   ]
 }

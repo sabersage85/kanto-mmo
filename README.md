@@ -19,10 +19,9 @@ a single-player cartridge game. Long term, the game will feature:
   original equivalent).
 - PvP battles and trading between players.
 
-This milestone builds on persistence/accounts/auth, PvP, and inventory with
-**trading**: players can send a trade request to another online player,
-negotiate an offer of items and/or creatures, and execute a server-
-authoritative atomic swap once both sides confirm.
+This milestone adds **gyms/progression**: three original NPC "gym leader"-
+equivalent trainers with themed teams gate the existing test map, award a
+persisted one-time badge on defeat, and track badge progress per account.
 
 ## Asset & Legal Policy
 
@@ -368,6 +367,27 @@ atomic swap — both tabs show the updated inventory/party immediately.
 Reload both tabs afterward to confirm the swapped items/creatures persisted
 on the correct account.
 
+### 11. Battle a gym trainer and earn a badge
+
+Three themed NPC trainers are placed on the map: **Garrick the Stonewarden**
+(Rock-type, near the top grass ring), **Lira the Tideglass** (Water-type,
+left path corridor), and **Kellan the Cinderguard** (Fire-type, right path
+corridor) — each rendered as a distinct colored marker with a name/type
+label. Walking onto a trainer's own tile before you've earned their badge
+intercepts your movement and starts a mandatory battle instead (no flee
+option, same turn-based UI as a wild battle but showing the trainer's name
+and which of their team's creatures is currently active). Win, and you're
+awarded a badge — the HUD's badge counter increments, and that trainer's
+tile becomes ordinary walkable terrain from then on (no rematch). Note the
+Stonewarden's Rock-typing resists the starter's Fire-type moves by design
+(the map's intentional "first gym" difficulty spike), so grinding a few
+wild-encounter levels above the trainer's own level-9/11 team first is
+recommended. Reload the tab afterward to confirm the badge persisted and
+the gate stayed open. A scripted end-to-end run of this whole flow (gate
+trigger → grind → win → badge → reconnect) lives in
+`packages/server/scripts/smoke-trainer.mjs` (`node
+packages/server/scripts/smoke-trainer.mjs` against a running dev server).
+
 ### Environment variables (client)
 
 The client defaults to connecting to `ws://localhost:2567` /
@@ -381,4 +401,17 @@ VITE_SERVER_HTTP_URL=http://your-server:2567
 ## What's in this milestone vs. what's next
 
 See [ROADMAP.md](./ROADMAP.md) for the planned sequence of future
-milestones (gyms/progression and larger world content).
+milestones (larger world content and beyond).
+
+## Note: battle "blackout" now fully heals instead of permanently fainting
+
+While building this milestone's mandatory, no-flee trainer gate, testing
+surfaced a pre-existing bug: with only one party member, losing *any*
+battle (wild, trainer, or PvP) previously left that creature permanently
+at 0 HP — and since healing items intentionally can never revive a fainted
+creature, there was no way to ever battle again. This is now fixed:
+losing a battle fully heals your active creature server-side (the
+"blackout and stumble back to safety" message now matches what actually
+happens), while item-based healing's "can't revive a fainted creature"
+behavior is unchanged. See `reviveToFullInstance` in
+`packages/shared/src/inventory.ts`.

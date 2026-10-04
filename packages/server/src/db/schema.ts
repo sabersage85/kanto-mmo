@@ -1,4 +1,4 @@
-import { integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 /**
  * Drizzle ORM schema for Postgres-backed persistence (Milestone 3).
@@ -90,3 +90,26 @@ export const inventoryItems = pgTable('inventory_items', {
   itemId: integer('item_id').notNull(),
   quantity: integer('quantity').notNull(),
 });
+
+/**
+ * One earned badge (Milestone 6): a row exists iff `accountId` has
+ * defeated the trainer identified by `trainerBadgeId`. A trainer is never
+ * re-awarded once its row exists — see `DrizzlePostgresStore.awardBadge`.
+ */
+export const defeatedTrainers = pgTable(
+  'defeated_trainers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => accounts.id, { onDelete: 'cascade' }),
+    trainerBadgeId: text('trainer_badge_id').notNull(),
+    defeatedAt: timestamp('defeated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    accountBadgeUnique: uniqueIndex('defeated_trainers_account_badge_unique').on(
+      table.accountId,
+      table.trainerBadgeId,
+    ),
+  }),
+);

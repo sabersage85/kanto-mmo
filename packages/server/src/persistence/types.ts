@@ -30,6 +30,8 @@ export interface PersistedPlayer {
   storage: CreatureInstance[];
   inventory: InventorySlot[];
   currency: number;
+  /** Badge ids earned from defeating NPC trainers (Milestone 6). A trainer is never re-awarded once its badge is present here. */
+  badges: string[];
 }
 
 /**
@@ -77,4 +79,11 @@ export interface PersistenceStore {
   saveInventory(accountId: string, inventory: InventorySlot[]): Promise<void>;
   /** Overwrites the account's currency balance (Milestone 2). */
   saveCurrency(accountId: string, currency: number): Promise<void>;
+
+  /**
+   * Idempotently records that `badgeId` has been earned (Milestone 6):
+   * calling this again for an already-earned badge is a no-op. Returns
+   * the account's full, de-duplicated badge list afterward.
+   */
+  awardBadge(accountId: string, badgeId: string): Promise<string[]>;
 }

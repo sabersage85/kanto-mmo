@@ -138,4 +138,22 @@ describe('InMemoryPersistenceStore', () => {
     expect(afterUpdate?.currency).toBe(90);
     expect(afterUpdate?.storage).toEqual([caught]);
   });
+
+  it('awardBadge round-trips through loadPlayer and is idempotent for repeated calls, including an unknown account', async () => {
+    const store = new InMemoryPersistenceStore();
+    const account = await store.createAccount('trainer@example.com', 'hash123');
+    const spawn = { mapId: 'route1', x: 0, y: 0, direction: 'down' as const };
+    await store.ensureStarterPlayer(account.id, 'Trainer', spawn, [], [], 0);
+
+    expect(await store.loadPlayer(account.id)).toMatchObject({ badges: [] });
+
+    expect(await store.awardBadge(account.id, 'stonewake-badge')).toEqual(['stonewake-badge']);
+    expect(await store.awardBadge(account.id, 'stonewake-badge')).toEqual(['stonewake-badge']);
+    expect(await store.awardBadge(account.id, 'tidemark-badge')).toEqual(['stonewake-badge', 'tidemark-badge']);
+
+    const loaded = await store.loadPlayer(account.id);
+    expect(loaded?.badges.sort()).toEqual(['stonewake-badge', 'tidemark-badge']);
+
+    expect(await store.awardBadge('unknown-account', 'stonewake-badge')).toEqual([]);
+  });
 });

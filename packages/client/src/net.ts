@@ -81,6 +81,11 @@ export async function createBattle(sessionToken: string, encounterToken: string)
   return colyseusClient.create('battle', { sessionToken, encounterToken });
 }
 
+/** Creates a fresh, private 1-player trainer-battle room for a server-issued single-use trainer-battle token (Milestone 6). */
+export async function createTrainerBattle(sessionToken: string, trainerBattleToken: string): Promise<Room> {
+  return colyseusClient.create('trainerBattle', { sessionToken, trainerBattleToken });
+}
+
 /** Joins a server-created PvP battle room by id (Milestone 4 — both sides join the same room the server made). */
 export async function joinPvpBattle(sessionToken: string, roomId: string): Promise<Room> {
   return colyseusClient.joinById(roomId, { sessionToken });

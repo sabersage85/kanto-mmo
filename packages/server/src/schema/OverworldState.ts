@@ -9,6 +9,8 @@ export class PlayerSchema extends Schema {
   @type('string') direction: 'up' | 'down' | 'left' | 'right' = 'down';
   @type('number') wins = 0;
   @type('number') losses = 0;
+  /** Count of NPC trainer badges earned so far (Milestone 6). */
+  @type('number') badgeCount = 0;
 }
 
 /** Root networked state for an OverworldRoom. */

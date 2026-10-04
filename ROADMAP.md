@@ -281,13 +281,71 @@ especially).
   inventories update correctly → disconnect and reconnect both → confirm
   the swapped items persisted on the correct account.
 
-## Milestone 6 — Gyms / Progression Structure
+## Milestone 6 — Gyms / Progression Structure (done)
 
-- Original equivalent of "gym leaders": NPC trainers with themed teams
-  gating progression between map regions.
-- Badge/progression tracking per player, persisted.
-- Scaling difficulty curve tied to the XP/level formulas already in
-  `shared`.
+- **Scoping choice**: rather than building new gated regions, three themed
+  NPC "gym leader"-equivalent trainers (Garrick the Stonewarden/Rock, Lira
+  the Tideglass/Water, Kellan the Cinderguard/Fire — original names, no
+  copyrighted terms) were added directly to the existing single `route1`
+  map as a vertical slice, spread across its grass ring and path corridors.
+- **Trainer-tile-as-gate**: each trainer's own map tile acts as its gate.
+  Stepping onto it while its badge isn't yet owned intercepts the move and
+  starts a mandatory `trainerBattle` room instead of completing normal
+  movement; once the badge is earned the tile behaves as ordinary terrain.
+- **Battle design — single active creature vs. a multi-creature trainer
+  team**: the player still battles with one active party creature (same as
+  PvP), but each trainer has a fixed 2-creature team that auto-advances to
+  its next creature on a faint, reusing the existing turn engine
+  (`TrainerBattleEngine` extends the same damage/type-effectiveness/turn-
+  order logic as wild and PvP battles). This keeps the human player's
+  experience identical to a normal battle while still requiring them to
+  grind through a real team, without the added lift of full party-vs-party
+  switching logic this milestone.
+- **Trainer AI**: picks a uniformly random valid move each turn — simple
+  and sufficient for this slice; a smarter (e.g. highest-expected-damage)
+  AI is a natural future enhancement once there's a reason to add it
+  elsewhere too.
+- **Difficulty scaling**: trainer teams are levels 9 and 11, a deliberate
+  step up from both the level-5 starter and the level 3-7 wild encounter
+  table on the same map. Team types are chosen to also exercise the type
+  chart meaningfully — e.g. the first trainer (Stonewarden) is Rock-type,
+  which resists the Fire-type starter, intentionally mirroring the genre's
+  classic "first gym favors over-leveling over type advantage" difficulty
+  curve rather than a free win.
+- **Badge/progression persistence**: a `defeatedTrainers` table (new
+  migration via the Milestone 3 Drizzle/Postgres persistence layer) records
+  each account's defeated trainer IDs. Badges are one-time: a trainer whose
+  badge is already owned is not re-challengeable (walking onto its tile
+  just behaves as normal terrain) rather than offering a repeatable
+  rematch, keeping first-badge-only semantics unambiguous for this slice.
+- **Client**: trainers render as distinct colored NPC markers with name/
+  type labels on the overworld; a badge-count/progress indicator shows in
+  the HUD; a `TrainerBattleScene` (mirroring the existing wild-battle UI
+  conventions) shows the trainer's name and which creature of their team
+  is currently active.
+- **Important bug found & fixed during this milestone's testing**: with
+  only one party member, losing *any* battle (wild, trainer, or PvP)
+  previously left that creature permanently fainted — "blackout" set its
+  HP to 0, and (by design) healing items can never revive a fainted
+  creature, and no flee option exists in trainer battles. That combination
+  made it possible to permanently soft-lock an account out of ever
+  battling again after a single loss. The genre convention implied by the
+  existing "you black out and stumble back to safety" message (a
+  Pokémon-Center-style automatic recovery) was never actually implemented.
+  Fixed by adding a `reviveToFullInstance` helper used only in each battle
+  room's loss path, fully healing the player's creature on a loss while
+  leaving item-based healing's "can't revive a fainted creature" behavior
+  unchanged. This affects **all three battle types**, not just gyms.
+- **Tests**: vitest coverage added for `TrainerBattleEngine` multi-creature
+  team turn/auto-advance resolution, badge-award/persistence round-trips,
+  and gate-unlock logic, plus `reviveToFullInstance` coverage in `shared`
+  — 79 shared + 85 server tests total, all passing.
+- Manually verified end-to-end via a scripted Colyseus client
+  (`packages/server/scripts/smoke-trainer.mjs`): register a fresh account →
+  confirm the gate triggers a mandatory battle while under-leveled → grind
+  wild encounters to a comfortable level → walk back and win the real gym
+  battle → confirm `badgeAwarded: true` and the gate no longer re-triggers
+  → disconnect and reconnect → confirm the badge persisted.
 
 ## Milestone 7 — Larger World & Content Breadth
 

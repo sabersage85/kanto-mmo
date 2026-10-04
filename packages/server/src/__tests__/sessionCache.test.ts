@@ -5,16 +5,19 @@ import {
   addCreatureToPartyOrStorage,
   addCurrency,
   addInventoryItem,
+  awardBadge,
   clearAllSessions,
   evictSession,
   executeTradeBetween,
   flushSession,
+  getBadges,
   getCurrency,
   getFirstAliveInstance,
   getInventory,
   getParty,
   getSession,
   getStorage,
+  hasBadge,
   loadSession,
   PARTY_CAP,
   recordBattleResult,
@@ -293,5 +296,32 @@ describe('sessionCache', () => {
       store,
     );
     expect(result.success).toBe(false);
+  });
+
+  it('awardBadge is idempotent: awarding the same badge twice only adds it once, and write-throughs to the store', async () => {
+    const store = new InMemoryPersistenceStore();
+    await loadSession(store, 'account-1', 'Ash', SPAWN);
+
+    expect(hasBadge('account-1', 'stonewake-badge')).toBe(false);
+    expect(awardBadge('account-1', 'stonewake-badge', store)).toEqual(['stonewake-badge']);
+    expect(hasBadge('account-1', 'stonewake-badge')).toBe(true);
+    expect(awardBadge('account-1', 'stonewake-badge', store)).toEqual(['stonewake-badge']);
+    expect(getBadges('account-1')).toEqual(['stonewake-badge']);
+
+    const persisted = await store.loadPlayer('account-1');
+    expect(persisted?.badges).toEqual(['stonewake-badge']);
+  });
+
+  it('awardBadge accumulates distinct badges and hasBadge/getBadges reflect an unknown account safely', async () => {
+    const store = new InMemoryPersistenceStore();
+    await loadSession(store, 'account-1', 'Ash', SPAWN);
+
+    awardBadge('account-1', 'stonewake-badge', store);
+    awardBadge('account-1', 'tidemark-badge', store);
+    expect(getBadges('account-1').sort()).toEqual(['stonewake-badge', 'tidemark-badge']);
+
+    expect(hasBadge('never-loaded', 'stonewake-badge')).toBe(false);
+    expect(getBadges('never-loaded')).toEqual([]);
+    expect(awardBadge('never-loaded', 'stonewake-badge', store)).toEqual([]);
   });
 });

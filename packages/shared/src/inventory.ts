@@ -51,6 +51,18 @@ export function applyHealToInstance(
   return { ...instance, currentHp: healed };
 }
 
+/**
+ * Fully heals a creature regardless of its current HP, including from 0 (fainted). Unlike
+ * `applyHealToInstance`, this is not an item effect — it models the "blackout" convention where
+ * losing a battle sends the player back to safety already healed (a Pokémon-Center-style
+ * automatic recovery), rather than leaving them with no usable party member and no way to
+ * revive one, since healing items deliberately cannot revive a fainted creature.
+ */
+export function reviveToFullInstance(instance: CreatureInstance, species: SpeciesDefinition): CreatureInstance {
+  const stats = calculateFullStatBlock(species.baseStats, instance.ivs, instance.evs, instance.level);
+  return { ...instance, currentHp: stats.hp };
+}
+
 /** Per-stat EV cap for boost items (matches the genre-standard 252 per-stat convention). */
 export const MAX_EV_PER_STAT = 252;
 

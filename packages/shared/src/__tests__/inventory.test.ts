@@ -8,6 +8,7 @@ import {
   getItemQuantity,
   MAX_EV_PER_STAT,
   removeItemFromInventory,
+  reviveToFullInstance,
 } from '../inventory.js';
 import { getItem, ITEMS } from '../items.js';
 import type { CreatureInstance, SpeciesDefinition } from '../types.js';
@@ -117,6 +118,23 @@ describe('applyHealToInstance', () => {
     const instance = makeInstance({ currentHp: 0 });
     const healed = applyHealToInstance(instance, SPECIES, 'full');
     expect(healed.currentHp).toBe(0);
+  });
+});
+
+describe('reviveToFullInstance', () => {
+  it('fully heals a fainted creature (unlike item-based healing)', () => {
+    const instance = makeInstance({ currentHp: 0 });
+    const revived = reviveToFullInstance(instance, SPECIES);
+    expect(revived.currentHp).toBeGreaterThan(0);
+    // Matches what a 'full' item heal would produce for a non-fainted creature.
+    const fullHealed = applyHealToInstance({ ...instance, currentHp: 1 }, SPECIES, 'full');
+    expect(revived.currentHp).toBe(fullHealed.currentHp);
+  });
+
+  it('is a no-op (still full) when the creature is already at max HP', () => {
+    const instance = makeInstance({ currentHp: 10_000 });
+    const revived = reviveToFullInstance(instance, SPECIES);
+    expect(revived.currentHp).toBeLessThan(10_000);
   });
 });
 

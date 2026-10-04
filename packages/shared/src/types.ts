@@ -157,3 +157,28 @@ export interface InventorySlot {
   itemId: number;
   quantity: number;
 }
+
+/** One creature in an NPC trainer's fixed team (Milestone 6). Movesets default via `getDefaultMoveset`. */
+export interface TrainerTeamMember {
+  speciesId: number;
+  level: number;
+  moveIds?: number[];
+}
+
+/**
+ * Static definition of an NPC "gym leader"-equivalent trainer (Milestone 6).
+ * All names/teams are original. A trainer occupies a single fixed overworld
+ * tile that doubles as its own gate: that tile is impassable (triggers a
+ * mandatory battle) until the owning account has earned `badgeId`, after
+ * which it behaves as an ordinary walkable tile for that account.
+ */
+export interface TrainerDefinition {
+  id: string;
+  name: string;
+  /** Dominant elemental theme of this trainer's team (used for the client's placeholder NPC color). */
+  themeType: ElementType;
+  badgeId: string;
+  badgeName: string;
+  position: { x: number; y: number };
+  team: TrainerTeamMember[];
+}

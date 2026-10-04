@@ -2,7 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import type { CreatureInstance, Direction, InventorySlot, StatBlock } from '@kanto-mmo/shared';
-import { accounts, inventoryItems, partyMembers, players, sessions, storageMembers } from '../db/schema.js';
+import { accounts, defeatedTrainers, inventoryItems, partyMembers, players, sessions, storageMembers } from '../db/schema.js';
 import type { AccountRecord, PersistedPlayer, PersistenceStore, SessionRecord } from './types.js';
 
 /** Postgres-backed implementation of {@link PersistenceStore}, via Drizzle ORM + postgres.js. */
@@ -89,6 +89,7 @@ export class DrizzlePostgresStore implements PersistenceStore {
       storage: [],
       inventory: starterInventory,
       currency: starterCurrency,
+      badges: [],
     };
   }
 
@@ -113,9 +114,15 @@ export class DrizzlePostgresStore implements PersistenceStore {
       .from(inventoryItems)
       .where(eq(inventoryItems.accountId, accountId));
 
+    const badgeRows = await this.db
+      .select({ trainerBadgeId: defeatedTrainers.trainerBadgeId })
+      .from(defeatedTrainers)
+      .where(eq(defeatedTrainers.accountId, accountId));
+
     const party: CreatureInstance[] = partyRows.map(rowToCreatureInstance);
     const storage: CreatureInstance[] = storageRows.map(rowToCreatureInstance);
     const inventory: InventorySlot[] = inventoryRows.map((row) => ({ itemId: row.itemId, quantity: row.quantity }));
+    const badges: string[] = badgeRows.map((row) => row.trainerBadgeId);
 
     return {
       accountId,
@@ -130,6 +137,7 @@ export class DrizzlePostgresStore implements PersistenceStore {
       storage,
       inventory,
       currency: playerRow.currency,
+      badges,
     };
   }
 
@@ -188,6 +196,19 @@ export class DrizzlePostgresStore implements PersistenceStore {
 
   async saveCurrency(accountId: string, currency: number): Promise<void> {
     await this.db.update(players).set({ currency, updatedAt: new Date() }).where(eq(players.accountId, accountId));
+  }
+
+  async awardBadge(accountId: string, badgeId: string): Promise<string[]> {
+    await this.db
+      .insert(defeatedTrainers)
+      .values({ accountId, trainerBadgeId: badgeId })
+      .onConflictDoNothing();
+
+    const rows = await this.db
+      .select({ trainerBadgeId: defeatedTrainers.trainerBadgeId })
+      .from(defeatedTrainers)
+      .where(eq(defeatedTrainers.accountId, accountId));
+    return rows.map((row) => row.trainerBadgeId);
   }
 
   private async insertInventory(accountId: string, inventory: InventorySlot[]): Promise<void> {

@@ -15,9 +15,11 @@ import {
 import { OverworldState, PlayerSchema } from '../schema/OverworldState.js';
 import { loadMap } from '../mapLoader.js';
 import { ROUTE1_ENCOUNTERS } from '../data/encounters.js';
+import { findTrainerAt, TRAINERS } from '../data/trainers.js';
 import { validateToken } from '../auth/authService.js';
 import { getPersistenceStore } from '../persistence/store.js';
 import { createPendingEncounter } from '../pendingEncounters.js';
+import { createPendingTrainerBattle } from '../pendingTrainerBattles.js';
 import {
   addInventoryItem,
   executeTradeBetween,
@@ -25,6 +27,7 @@ import {
   getCurrency,
   getInventory,
   getSession,
+  hasBadge,
   loadSession,
   spendCurrency,
   updatePosition,
@@ -72,6 +75,19 @@ export class OverworldRoom extends Room<OverworldState> {
         if (session) {
           player.wins = session.wins;
           player.losses = session.losses;
+        }
+      }
+    });
+
+    this.onMessage('trainerBattleEnded', (client) => {
+      this.inBattle.delete(client.sessionId);
+      const accountId = this.accountIds.get(client.sessionId);
+      const player = this.state.players.get(client.sessionId);
+      if (accountId && player) {
+        const session = getSession(accountId);
+        if (session) {
+          player.badgeCount = session.badges.length;
+          client.send('trainersInfo', this.buildTrainersInfo(session.badges));
         }
       }
     });
@@ -144,6 +160,7 @@ export class OverworldRoom extends Room<OverworldState> {
     player.direction = session.direction;
     player.wins = session.wins;
     player.losses = session.losses;
+    player.badgeCount = session.badges.length;
     this.state.players.set(client.sessionId, player);
 
     this.accountIds.set(client.sessionId, auth.accountId);
@@ -154,6 +171,22 @@ export class OverworldRoom extends Room<OverworldState> {
       party: session.party,
       storage: session.storage,
     });
+
+    client.send('trainersInfo', this.buildTrainersInfo(session.badges));
+  }
+
+  /** Builds the `trainersInfo` payload (trainer roster + per-account defeated status) sent on join and after each trainer battle. */
+  private buildTrainersInfo(badges: string[]): { trainers: Array<Record<string, unknown>> } {
+    return {
+      trainers: TRAINERS.map((trainer) => ({
+        id: trainer.id,
+        name: trainer.name,
+        themeType: trainer.themeType,
+        position: trainer.position,
+        badgeName: trainer.badgeName,
+        defeated: badges.includes(trainer.badgeId),
+      })),
+    };
   }
 
   async onLeave(client: Client, consented: boolean): Promise<void> {
@@ -211,18 +244,40 @@ export class OverworldRoom extends Room<OverworldState> {
     const nextX = player.x + dx;
     const nextY = player.y + dy;
 
+    const accountId = this.accountIds.get(client.sessionId);
+
+    // Trainer-gate check (Milestone 6): a trainer's own tile acts as its
+    // gate — stepping onto it either triggers the mandatory battle (badge
+    // not yet earned, move rejected) or behaves as ordinary terrain (badge
+    // already earned, falls through to the normal walkability check
+    // below, since every trainer stands on an otherwise-walkable tile).
+    const trainer = findTrainerAt(nextX, nextY);
+    if (trainer && accountId && !hasBadge(accountId, trainer.badgeId)) {
+      this.triggerTrainerBattle(client, trainer.id);
+      return;
+    }
+
     if (!isWalkable(this.map, nextX, nextY)) return;
 
     player.x = nextX;
     player.y = nextY;
 
-    const accountId = this.accountIds.get(client.sessionId);
     if (accountId && getSession(accountId)) {
       updatePosition(accountId, this.map.id, nextX, nextY, player.direction, getPersistenceStore());
     }
 
     this.maybeTriggerEncounter(client, nextX, nextY);
     this.maybeTriggerShop(client, nextX, nextY);
+  }
+
+  /** Starts a mandatory NPC trainer battle when the player's move would step onto that trainer's (not-yet-defeated) tile. */
+  private triggerTrainerBattle(client: Client, trainerId: string): void {
+    const accountId = this.accountIds.get(client.sessionId);
+    if (!accountId) return;
+
+    this.inBattle.add(client.sessionId);
+    const token = createPendingTrainerBattle(accountId, trainerId);
+    client.send('trainerBattleStart', { token, trainerId });
   }
 
   /** Rolls a wild encounter if the player just stepped onto a tile type covered by an encounter table. */

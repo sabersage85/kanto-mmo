@@ -14,6 +14,7 @@ import {
   getSpecies,
   instanceFromCapturedWild,
   resolveTurnOrder,
+  reviveToFullInstance,
   type BattleCreatureState,
   type CreatureInstance,
   type SpeciesDefinition,
@@ -218,8 +219,12 @@ export class BattleRoom extends Room<BattleState> {
           (expResult.leveledUp ? ` ${this.playerBattle.name} grew to level ${expResult.newLevel}!` : ''),
       );
     } else {
-      updatePartyMember(this.accountId, { ...this.partyInstance, currentHp: 0 }, store);
-      this.pushLog(`${this.playerBattle.name} fainted! You black out and stumble back to safety...`);
+      // Blackout convention: the player is sent back to safety already healed (Pokémon-Center
+      // style auto-recovery) rather than left with a fainted party, since healing items
+      // deliberately cannot revive a fainted creature and there would otherwise be no way to
+      // battle again.
+      updatePartyMember(this.accountId, reviveToFullInstance(this.partyInstance, this.playerSpecies), store);
+      this.pushLog(`${this.playerBattle.name} fainted! You black out and stumble back to safety, fully healed.`);
     }
 
     this.clock.setTimeout(() => this.disconnect(), BATTLE_DISPOSE_DELAY_MS);

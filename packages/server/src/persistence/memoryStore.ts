@@ -74,6 +74,7 @@ export class InMemoryPersistenceStore implements PersistenceStore {
       storage: [],
       inventory: starterInventory,
       currency: starterCurrency,
+      badges: [],
     };
     this.players.set(accountId, player);
     return player;
@@ -122,5 +123,14 @@ export class InMemoryPersistenceStore implements PersistenceStore {
     const player = this.players.get(accountId);
     if (!player) return;
     player.currency = currency;
+  }
+
+  async awardBadge(accountId: string, badgeId: string): Promise<string[]> {
+    const player = this.players.get(accountId);
+    if (!player) return [];
+    if (!player.badges.includes(badgeId)) {
+      player.badges = [...player.badges, badgeId];
+    }
+    return player.badges;
   }
 }
