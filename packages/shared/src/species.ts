@@ -147,6 +147,90 @@ export const SPECIES: SpeciesDefinition[] = [
   },
 ];
 
+/**
+ * Milestone 7 additions: a modest roster expansion (8 more originals, ids
+ * 16-23) for route/forest variety and to give the rival and Murk Crew
+ * grunts their own distinct teams, rather than reusing the exact same
+ * wild-encounter species. No evolution chains are added for these (kept
+ * as a deliberately low-lift choice, documented in ROADMAP.md) — only
+ * Tindle/Pyrebrand and Pondrake/Tidalune (both pre-existing) demonstrate
+ * that concept for this slice.
+ */
+SPECIES.push(
+  {
+    id: 16,
+    name: 'Thistlehop',
+    types: ['Grass'],
+    baseStats: { hp: 46, attack: 58, defense: 44, spAttack: 42, spDefense: 44, speed: 68 },
+    growthRate: 'Fast',
+    baseExpYield: 65,
+    description: 'Bounces through bramble thickets on a single coiled stem-leg.',
+  },
+  {
+    id: 17,
+    name: 'Driftmoth',
+    types: ['Flying', 'Psychic'],
+    baseStats: { hp: 48, attack: 40, defense: 42, spAttack: 72, spDefense: 60, speed: 62 },
+    growthRate: 'Erratic',
+    baseExpYield: 76,
+    description: 'Its dust-soft wingbeats are said to carry half-formed thoughts between sleepers.',
+  },
+  {
+    id: 18,
+    name: 'Cindertail',
+    types: ['Fire'],
+    baseStats: { hp: 50, attack: 62, defense: 46, spAttack: 55, spDefense: 48, speed: 72 },
+    growthRate: 'Medium',
+    baseExpYield: 68,
+    description: 'A forest fox-shaped creature whose tail-flame brightens when it is confident.',
+  },
+  {
+    id: 19,
+    name: 'Murkling',
+    types: ['Shadow'],
+    baseStats: { hp: 52, attack: 60, defense: 48, spAttack: 50, spDefense: 50, speed: 58 },
+    growthRate: 'Medium',
+    baseExpYield: 70,
+    description: 'Favored by poachers for how easily it slips between shadows unseen — a trait it resents being used for.',
+  },
+  {
+    id: 20,
+    name: 'Shellnap',
+    types: ['Water', 'Rock'],
+    baseStats: { hp: 56, attack: 58, defense: 78, spAttack: 35, spDefense: 58, speed: 30 },
+    growthRate: 'Slow',
+    baseExpYield: 80,
+    description: 'Wedges itself between river stones and refuses to budge once settled.',
+  },
+  {
+    id: 21,
+    name: 'Gloomhare',
+    types: ['Shadow', 'Normal'],
+    baseStats: { hp: 54, attack: 64, defense: 50, spAttack: 48, spDefense: 50, speed: 75 },
+    growthRate: 'Medium',
+    baseExpYield: 82,
+    description: 'A nocturnal forest hare whose ears fade from view entirely after dusk.',
+  },
+  {
+    id: 22,
+    name: 'Glimmerwing',
+    types: ['Electric', 'Flying'],
+    baseStats: { hp: 44, attack: 46, defense: 40, spAttack: 68, spDefense: 50, speed: 80 },
+    growthRate: 'Fast',
+    baseExpYield: 74,
+    description: 'Flickers like a firefly when it flies, leaving faint static trails in humid air.',
+  },
+  {
+    id: 23,
+    name: 'Frostpine',
+    types: ['Ice', 'Grass'],
+    baseStats: { hp: 58, attack: 55, defense: 62, spAttack: 64, spDefense: 66, speed: 38 },
+    growthRate: 'Slow',
+    baseExpYield: 84,
+    description: 'Needle-like fronds stay frosted year-round even in the warmest forest clearings.',
+  },
+);
+
 export function getSpecies(id: number): SpeciesDefinition {
   const species = SPECIES.find((s) => s.id === id);
   if (!species) {

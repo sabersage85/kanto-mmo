@@ -19,9 +19,14 @@ a single-player cartridge game. Long term, the game will feature:
   original equivalent).
 - PvP battles and trading between players.
 
-This milestone adds **gyms/progression**: three original NPC "gym leader"-
-equivalent trainers with themed teams gate the existing test map, award a
-persisted one-time badge on defeat, and track badge progress per account.
+This milestone (7) adds **a larger world**: the single test map is now five
+interconnected maps (Hearthfield Town, Fernway Wood, and the three gym
+towns) linked by warps, an original recurring rival ("Juno," three
+escalating battles), an original minor-antagonist group (the "Murk Crew,"
+a light 3-stage server-authoritative quest), 8 new original creature
+species, and NPC dialogue/quest-log UI on the client. See the ROADMAP's
+Milestone 7 entry for full details and the legal rationale behind every
+invented name/character used.
 
 ## Asset & Legal Policy
 
@@ -49,6 +54,17 @@ What *is* used as reference, and how:
   accuracy/pp, XP yields, catch rates, prices) are **original creations**
   for this project — see `packages/shared/src/species.ts`, `moves.ts`, and
   `items.ts`.
+- Milestone 7's world/characters (map names *Hearthfield*, *Fernway Wood*,
+  *Stonehollow*, *Tidemoor*, *Cinderfell*; the rival *Juno*; the
+  antagonist group the *Murk Crew* and its members *Shade*, *Murk Crew
+  Lookout/Scout/Grunt*) are likewise original creations invented for this
+  project. They intentionally share the same *general structural shape* as
+  a classic monster-collecting journey (starting town → forest route →
+  gym towns → a recurring rival → a recurring antagonist team) — a
+  long-standing, genre-generic story structure, not copyrightable
+  expression — but every name, personality, motif, and line of dialogue is
+  original and shares no overlap with any Pokémon game, anime episode, or
+  character.
 - All visuals in this milestone are **placeholder colored rectangles**
   (colored squares for players, colored tiles for terrain). No sprite or
   tileset image files are included anywhere in the repo.
@@ -70,36 +86,45 @@ packages/
             client and server (Player/Creature/Move/Map/Battle types,
             damage calc, type effectiveness, XP curve, turn order/battle
             resolution, wild encounter rolling). Has its own vitest suite.
-  server/   Authoritative Node.js game server, built on Colyseus. Hosts an
-            OverworldRoom that tracks every connected player's position on
-            a JSON-defined grid map, validates movement server-side, rolls
-            wild encounters on grass tiles, offers a shop on `shop` tiles,
-            handles server-authoritative inventory/currency mutations,
-            handles PvP challenge requests/responses, and handles trade
-            requests/negotiation/atomic execution between two players,
-            broadcasting state to all clients in real time. A BattleRoom
-            resolves one-player-vs-one-wild-creature PvE battles (turn
-            order, damage, win/loss, XP award, item use incl. the catch
-            mechanic); a PvpBattleRoom resolves two-human-controlled
-            battles (turn order, damage, win/loss, win/loss record
-            persistence, turn timeout/forfeit). A Drizzle/PostgreSQL-backed
-            persistence layer durably stores accounts, sessions, each
-            player's party/position/win-loss record, and inventory/
-            currency/storage, fronted by a write-through in-memory cache
-            for low-latency reads during gameplay. Also exposes a small
-            Express HTTP API (health check, map data fetch,
-            /auth/register, /auth/login). Has its own vitest suite.
+  server/   Authoritative Node.js game server, built on Colyseus. Hosts one
+            OverworldRoom instance per map (five JSON-defined maps, routed
+            via Colyseus `filterBy(['mapId'])`) that tracks every connected
+            player's position, validates movement server-side, rolls wild
+            encounters on grass tiles, handles warp-tile map transitions,
+            NPC dialogue/quest-stage interactions, gym/rival/grunt trainer
+            gate battles, offers a shop on `shop` tiles, handles server-
+            authoritative inventory/currency mutations, handles PvP
+            challenge requests/responses, and handles trade requests/
+            negotiation/atomic execution between two players, broadcasting
+            state to all clients in real time. A BattleRoom resolves one-
+            player-vs-one-wild-creature PvE battles (turn order, damage,
+            win/loss, XP award, item use incl. the catch mechanic); a
+            TrainerBattleRoom resolves gym/rival/grunt trainer battles
+            (multi-creature team auto-advance, badge/quest-stage award);
+            a PvpBattleRoom resolves two-human-controlled battles (turn
+            order, damage, win/loss, win/loss record persistence, turn
+            timeout/forfeit). A Drizzle/PostgreSQL-backed persistence layer
+            durably stores accounts, sessions, each player's party/
+            position/map/win-loss record/badges/quest stage, and
+            inventory/currency/storage, fronted by a write-through
+            in-memory cache for low-latency reads during gameplay. Also
+            exposes a small Express HTTP API (health check, map data
+            fetch, current-map resolution, /auth/register, /auth/login).
+            Has its own vitest suite.
   client/   Phaser 3 + Vite web client. Shows a DOM login/register overlay
             before connecting, then connects to the Colyseus server,
-            renders the map as colored tiles and each player as a colored
-            square (click to send a PvP challenge, shift+click to send a
-            trade request), sends movement input from arrow keys / WASD,
-            and shows a placeholder-art BattleScene (HP bars, move buttons,
-            item menu, battle log) for wild encounters or a PvpBattleScene
-            for player-vs-player battles. An inventory panel overlay (`I`
-            key), a shop overlay (auto-shown on the shop tile), and a trade
-            negotiation panel (opened on trade accept) round out the
-            item/trading UI.
+            renders the current map as colored tiles and each player as a
+            colored square (click to send a PvP challenge, shift+click to
+            send a trade request), sends movement input from arrow keys /
+            WASD, switches rooms/maps on a warp-tile trigger, shows NPC/
+            trainer markers with name labels, a DOM dialogue box for NPC
+            conversations, a toggleable (`Q` key) quest-log panel, and a
+            placeholder-art BattleScene (HP bars, move buttons, item menu,
+            battle log) shared by wild encounters, trainer battles, and
+            PvpBattleScene for player-vs-player battles. An inventory panel
+            overlay (`I` key), a shop overlay (auto-shown on the shop
+            tile), and a trade negotiation panel (opened on trade accept)
+            round out the item/trading UI.
 ```
 
 ```mermaid
@@ -387,6 +412,24 @@ the gate stayed open. A scripted end-to-end run of this whole flow (gate
 trigger → grind → win → badge → reconnect) lives in
 `packages/server/scripts/smoke-trainer.mjs` (`node
 packages/server/scripts/smoke-trainer.mjs` against a running dev server).
+
+### 12. Explore the wider world, meet Juno, and follow the Murk Crew thread
+
+The world is now five maps: **Hearthfield Town** (start), **Fernway Wood**
+(forest route, east of Hearthfield), and the three gym towns
+**Stonehollow**, **Tidemoor**, and **Cinderfell**, linked by warp tiles —
+walk onto one and you'll transition into the next map automatically (no
+loading screen needed; it's a plain room switch). Bump into an NPC (a
+gray or gold square with a name label) to open a dialogue box; press `Q`
+to toggle the quest-log panel showing your current Murk Crew quest stage.
+Juno, your rival (a green marker), appears once per gym town and will
+challenge you to a battle every time, with a tougher team each visit. The
+Murk Crew (dark-purple markers) block the Fernway Wood path and later
+appear near Tidemoor/Cinderfell; defeating both Fernway lookouts advances
+the quest automatically, while the Tidemoor beat requires defeating the
+lure thief *and* walking the recovered lure back to the fisherman NPC to
+turn it in. Reconnect at any point to confirm your current map, badges,
+and quest stage all persisted correctly.
 
 ### Environment variables (client)
 

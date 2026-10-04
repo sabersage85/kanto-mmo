@@ -347,14 +347,102 @@ especially).
   battle → confirm `badgeAwarded: true` and the gate no longer re-triggers
   → disconnect and reconnect → confirm the badge persisted.
 
-## Milestone 7 — Larger World & Content Breadth
+## Milestone 7 — Larger World & Content Breadth (done)
 
-- Multiple interconnected maps with warps/transitions (cross-map movement,
-  currently out of scope — Milestone 0 is single-map only).
-- Expand the original species roster well beyond the initial 12 placeholder
-  creatures, with evolution chains.
-- Expand the move list, add status effects/abilities design.
-- Towns/NPCs, quest or dialogue system.
+> **Legal/naming note**: the user initially asked for content explicitly
+> modeled on the Pokémon anime's Indigo League (episodes 1-52). That was
+> declined because recreating specific copyrighted characters (Ash,
+> Pikachu, Brock, Misty, Team Rocket), town names (Pallet Town, Viridian
+> Forest, Pewter City, etc.), and episode plots would be copyright
+> infringement. The user agreed instead to an **original** world/rival/
+> antagonist with the same general *structural shape* as a classic
+> journey (starting town → forest route → gym towns → a recurring rival →
+> a recurring antagonist team) — every name, character, place, and line of
+> dialogue below is an original creation with zero overlap with Nintendo/
+> Game Freak IP.
+
+- **World layout**: the single Milestone 0-6 test map was retired and
+  replaced with five interconnected maps, each a standalone JSON file
+  parsed by `mapLoader.ts`: **Hearthfield Town** (starting town, keeps the
+  original lake/shop layout), **Fernway Wood** (a forest route — open
+  grass box with one path corridor), **Stonehollow**, **Tidemoor**, and
+  **Cinderfell** (the three existing Milestone 6 gym towns, now one per
+  map instead of co-located). Maps connect via `WarpDefinition` tiles
+  (trigger coordinate + destination map/x/y); stepping onto one moves the
+  player server-side (`updatePosition` to the new map/coords, persisted
+  immediately) and sends a `warp` message telling the client which map to
+  fetch/join next — the client leaves the old room and joins a *new*
+  `OverworldRoom` instance for the destination map (Colyseus
+  `filterBy(['mapId'])` routes one room per map). A `/players/me/map` HTTP
+  endpoint lets the client resolve which map to join first on initial
+  login/reconnect, since picking a room requires knowing the map before
+  opening the first websocket connection.
+- **Original rival — "Juno"**: a named NPC who appears three times (once
+  on each of Fernway Wood/Tidemoor/Cinderfell), always recognizable by
+  name, with a distinct personality (friendly-competitive, a bit cocky,
+  genuinely encouraging after a loss) expressed through a few fixed lines
+  per encounter stage. Juno's team grows each time — 2 creatures at level
+  7, then 3 at level 12, then 3 at level 17 — scaling roughly alongside
+  the player's expected progress through the three gyms. Implemented as
+  `kind: 'rival'` trainers reusing the exact same `TrainerBattleEngine`
+  from Milestone 6 (no new battle code needed).
+- **Original antagonist group — the "Murk Crew"**: a small-time,
+  Shadow-type-themed creature-poaching group with a simple 3-beat light
+  questline, tracked by a single `questStage` integer (0-3) per account
+  persisted via the Milestone 3 layer — deliberately *not* a general quest
+  engine, per the brief's "simple state tracking" scope:
+  - **Stage 0 → 1** (auto): defeat both Murk Crew lookouts blocking the
+    only path through Fernway Wood.
+  - **Stage 1 → 2** (manual, via NPC interaction): defeat "Murk Crew
+    Grunt," who stole a Tidemoor fisherman's lure, then walk back and hand
+    it to `tidemoor-fisher` — intentionally *not* automatic on the grunt's
+    defeat, so the player has to complete the "return it" beat themselves.
+  - **Stage 2 → 3** (auto): defeat "Shade," the Murk Crew organizer, in
+    Cinderfell.
+  Grunts/leader are `kind: 'grunt'` trainers, same battle engine, with
+  per-trainer `greeting`/`defeatLine` dialogue for flavor.
+- **NPC interaction model**: NPC tiles (both the quest-bearing ones above
+  and plain flavor NPCs scattered through the towns) behave as permanent,
+  always-blocking fixtures — reusing the exact same movement-interception
+  code path as Milestone 6's trainer gates, so no new client input scheme
+  was needed. Unlike trainer gates, NPC dialogue is repeatable (never
+  "used up").
+- **Species roster expansion**: 8 new original creatures added (Thistlehop,
+  Driftmoth, Cindertail, Murkling, Shellnap, Gloomhare, Glimmerwing,
+  Frostpine — bringing the total to 23), used for Juno's and the Murk
+  Crew's teams plus Fernway Wood's wild-encounter table. Evolution chains
+  and new moves were both judged unnecessary low-value scope for this
+  milestone (the existing 12 moves + type-based default movesets already
+  covered the new species adequately) and were skipped — documented here
+  as a deliberate scope decision, not an oversight.
+- **Client**: warp-triggered room switching, NPC placeholder-art markers
+  (gold squares for quest NPCs, gray for flavor NPCs, distinct from the
+  diamond trainer markers — rival/grunt trainers also get their own
+  green/dark-purple diamond colors instead of gym-theme colors), a DOM
+  dialogue box (`ui/dialogueBox.ts`, click-to-advance across multiple
+  lines), and a toggleable `[Q]` quest-log panel (`ui/questLog.ts`)
+  showing the current Murk Crew stage's title/description.
+- **Tests**: vitest coverage added for warp/NPC tile lookup helpers
+  (`mapLoader.test.ts`), the full Murk Crew quest-stage state machine
+  including the "doesn't advance early"/"doesn't re-advance" edge cases
+  and the quest-board NPC's read-only guarantee (`quest.test.ts`), and
+  rival team/level/badge-id progression invariants — 79 shared + 104
+  server tests total, all passing.
+- Manually verified end-to-end via scripted Colyseus clients: registered a
+  fresh account, confirmed `/players/me/map` resolves to Hearthfield,
+  walked from spawn to the east warp and confirmed the `warp` message +
+  room switch into Fernway Wood, confirmed re-resolving `/players/me/map`
+  reflects the new map (persistence survives the warp), walked into the
+  first Murk Crew grunt and confirmed a `trainerBattleStart` with the
+  correct greeting line, and bumped the Hearthfield quest-board NPC and
+  confirmed the correct stage-0 dialogue.
+
+## Milestone 8 — Future Content Breadth
+
+- Deeper evolution chains / move-list expansion once there's a concrete
+  gameplay reason (e.g. a later-game area that wants higher-tier threats).
+- Status effects/abilities design.
+- Additional towns/routes beyond the five added in Milestone 7.
 
 ## Ongoing / Cross-Cutting Concerns
 

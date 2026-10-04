@@ -11,7 +11,7 @@ export class AuthError extends Error {}
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_NAME_LENGTH = 16;
-const DEFAULT_MAP_ID = 'route1';
+const DEFAULT_MAP_ID = 'hearthfield';
 
 export interface AuthResult {
   token: string;

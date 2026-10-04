@@ -6,6 +6,7 @@ import {
   applyHealToInstance,
   applyStatBoostToInstance,
   getItem,
+  getQuestStageInfo,
   getSpecies,
   isWalkable,
   ITEMS,
@@ -13,9 +14,10 @@ import {
   rollEncounter,
 } from '@kanto-mmo/shared';
 import { OverworldState, PlayerSchema } from '../schema/OverworldState.js';
-import { loadMap } from '../mapLoader.js';
-import { ROUTE1_ENCOUNTERS } from '../data/encounters.js';
-import { findTrainerAt, TRAINERS } from '../data/trainers.js';
+import { findNpcAt, findWarpAt, loadMap } from '../mapLoader.js';
+import { encounterTableForMap } from '../data/encounters.js';
+import { findTrainerAt, trainersForMap, TRAINERS } from '../data/trainers.js';
+import { interactWithNpc } from '../quest.js';
 import { validateToken } from '../auth/authService.js';
 import { getPersistenceStore } from '../persistence/store.js';
 import { createPendingEncounter } from '../pendingEncounters.js';
@@ -24,8 +26,10 @@ import {
   addInventoryItem,
   executeTradeBetween,
   flushSession,
+  getBadges,
   getCurrency,
   getInventory,
+  getQuestStage,
   getSession,
   hasBadge,
   loadSession,
@@ -36,16 +40,20 @@ import { ChallengeManager } from '../pvp/challengeManager.js';
 import type { ActiveTrade } from '../trade/tradeManager.js';
 import { TradeManager } from '../trade/tradeManager.js';
 
+const DEFAULT_MAP_ID = 'hearthfield';
+
 interface JoinOptions {
   /** Session token issued by POST /auth/register or /auth/login. */
   token?: string;
+  /** Which map's room instance to join/create (Milestone 7). Defaults to the starting town. */
+  mapId?: string;
 }
 
 interface AuthData {
   accountId: string;
 }
 
-/** A single shared-world room tracking every connected player's position on one map. */
+/** A single shared-world room tracking every connected player's position on one map (one room instance per `mapId`, Milestone 7). */
 export class OverworldRoom extends Room<OverworldState> {
   maxClients = 64;
   private map!: MapDefinition;
@@ -55,8 +63,8 @@ export class OverworldRoom extends Room<OverworldState> {
   private challenges = new ChallengeManager();
   private trades = new TradeManager();
 
-  onCreate(): void {
-    this.map = loadMap('route1');
+  onCreate(options: { mapId?: string }): void {
+    this.map = loadMap(options?.mapId ?? DEFAULT_MAP_ID);
 
     const state = new OverworldState();
     state.mapId = this.map.id;
@@ -86,10 +94,15 @@ export class OverworldRoom extends Room<OverworldState> {
       if (accountId && player) {
         const session = getSession(accountId);
         if (session) {
-          player.badgeCount = session.badges.length;
+          player.badgeCount = this.countGymBadges(session.badges);
           client.send('trainersInfo', this.buildTrainersInfo(session.badges));
+          client.send('questUpdate', this.buildQuestUpdate(accountId));
         }
       }
+    });
+
+    this.onMessage('interactNpc', (client, message: { npcId: string }) => {
+      this.handleInteractNpc(client, message?.npcId);
     });
 
     this.onMessage('challengeRequest', (client, message: { targetSessionId: string }) => {
@@ -160,7 +173,7 @@ export class OverworldRoom extends Room<OverworldState> {
     player.direction = session.direction;
     player.wins = session.wins;
     player.losses = session.losses;
-    player.badgeCount = session.badges.length;
+    player.badgeCount = this.countGymBadges(session.badges);
     this.state.players.set(client.sessionId, player);
 
     this.accountIds.set(client.sessionId, auth.accountId);
@@ -173,20 +186,36 @@ export class OverworldRoom extends Room<OverworldState> {
     });
 
     client.send('trainersInfo', this.buildTrainersInfo(session.badges));
+    client.send('npcsInfo', { npcs: this.map.npcs ?? [] });
+    client.send('warpsInfo', { warps: this.map.warps ?? [] });
+    client.send('questUpdate', this.buildQuestUpdate(auth.accountId));
   }
 
-  /** Builds the `trainersInfo` payload (trainer roster + per-account defeated status) sent on join and after each trainer battle. */
+  /** Builds the `trainersInfo` payload (THIS map's trainers only + per-account defeated status) sent on join and after each trainer battle. */
   private buildTrainersInfo(badges: string[]): { trainers: Array<Record<string, unknown>> } {
     return {
-      trainers: TRAINERS.map((trainer) => ({
+      trainers: trainersForMap(this.map.id).map((trainer) => ({
         id: trainer.id,
         name: trainer.name,
         themeType: trainer.themeType,
+        kind: trainer.kind,
         position: trainer.position,
         badgeName: trainer.badgeName,
         defeated: badges.includes(trainer.badgeId),
       })),
     };
+  }
+
+  /** Only `kind: 'gym'` wins count toward the client's badge counter — rival/grunt wins use the same badge-tracking mechanism but are narrative, not progression gates. */
+  private countGymBadges(badges: string[]): number {
+    return TRAINERS.filter((t) => t.kind === 'gym' && badges.includes(t.badgeId)).length;
+  }
+
+  /** Builds the `questUpdate` payload (current Murk Crew stage + display info) sent on join and whenever it might have changed. */
+  private buildQuestUpdate(accountId: string): { stage: number; title: string; description: string } {
+    const stage = getQuestStage(accountId);
+    const info = getQuestStageInfo(stage);
+    return { stage, title: info.title, description: info.description };
   }
 
   async onLeave(client: Client, consented: boolean): Promise<void> {
@@ -246,14 +275,34 @@ export class OverworldRoom extends Room<OverworldState> {
 
     const accountId = this.accountIds.get(client.sessionId);
 
-    // Trainer-gate check (Milestone 6): a trainer's own tile acts as its
-    // gate — stepping onto it either triggers the mandatory battle (badge
-    // not yet earned, move rejected) or behaves as ordinary terrain (badge
-    // already earned, falls through to the normal walkability check
-    // below, since every trainer stands on an otherwise-walkable tile).
-    const trainer = findTrainerAt(nextX, nextY);
+    // Trainer-gate check (Milestone 6, now map-scoped since Milestone 7):
+    // a trainer's own tile acts as its gate — stepping onto it either
+    // triggers the mandatory battle (badge not yet earned, move rejected)
+    // or behaves as ordinary terrain (badge already earned, falls through
+    // to the normal walkability check below, since every trainer stands
+    // on an otherwise-walkable tile).
+    const trainer = findTrainerAt(this.map.id, nextX, nextY);
     if (trainer && accountId && !hasBadge(accountId, trainer.badgeId)) {
-      this.triggerTrainerBattle(client, trainer.id);
+      this.triggerTrainerBattle(client, trainer.id, trainer.greeting);
+      return;
+    }
+
+    // NPC tiles (Milestone 7) are permanent, always-blocking fixtures: a
+    // bump never moves the player onto them, it just triggers dialogue.
+    const npc = findNpcAt(this.map, nextX, nextY);
+    if (npc && accountId) {
+      const result = interactWithNpc(npc.id, npc.name, accountId, getBadges(accountId), getPersistenceStore());
+      client.send('npcDialogue', { npcId: npc.id, name: result.name, lines: result.lines });
+      if (result.questAdvanced) client.send('questUpdate', this.buildQuestUpdate(accountId));
+      return;
+    }
+
+    // Warp tiles (Milestone 7): stepping onto one moves the player to a
+    // different map's OverworldRoom instead of completing the move here.
+    const warp = findWarpAt(this.map, nextX, nextY);
+    if (warp && accountId) {
+      updatePosition(accountId, warp.targetMapId, warp.targetX, warp.targetY, player.direction, getPersistenceStore());
+      client.send('warp', { mapId: warp.targetMapId, x: warp.targetX, y: warp.targetY, direction: player.direction });
       return;
     }
 
@@ -271,21 +320,36 @@ export class OverworldRoom extends Room<OverworldState> {
   }
 
   /** Starts a mandatory NPC trainer battle when the player's move would step onto that trainer's (not-yet-defeated) tile. */
-  private triggerTrainerBattle(client: Client, trainerId: string): void {
+  private triggerTrainerBattle(client: Client, trainerId: string, greeting?: string): void {
     const accountId = this.accountIds.get(client.sessionId);
     if (!accountId) return;
 
     this.inBattle.add(client.sessionId);
     const token = createPendingTrainerBattle(accountId, trainerId);
-    client.send('trainerBattleStart', { token, trainerId });
+    client.send('trainerBattleStart', { token, trainerId, greeting });
   }
 
-  /** Rolls a wild encounter if the player just stepped onto a tile type covered by an encounter table. */
-  private maybeTriggerEncounter(client: Client, x: number, y: number): void {
-    const tile = this.map.tiles[y]?.[x];
-    if (!tile || tile.type !== ROUTE1_ENCOUNTERS.tileType) return;
+  /** Called from the client's explicit "interact" key in addition to the automatic bump-trigger in `handleMove`. */
+  private handleInteractNpc(client: Client, npcId: string | undefined): void {
+    if (!npcId) return;
+    const accountId = this.accountIds.get(client.sessionId);
+    if (!accountId) return;
+    const npc = (this.map.npcs ?? []).find((n) => n.id === npcId);
+    if (!npc) return;
 
-    const roll = rollEncounter(ROUTE1_ENCOUNTERS);
+    const result = interactWithNpc(npc.id, npc.name, accountId, getBadges(accountId), getPersistenceStore());
+    client.send('npcDialogue', { npcId: npc.id, name: result.name, lines: result.lines });
+    if (result.questAdvanced) client.send('questUpdate', this.buildQuestUpdate(accountId));
+  }
+
+  /** Rolls a wild encounter if the player just stepped onto a tile type covered by this map's encounter table. */
+  private maybeTriggerEncounter(client: Client, x: number, y: number): void {
+    const table = encounterTableForMap(this.map.id);
+    if (!table) return;
+    const tile = this.map.tiles[y]?.[x];
+    if (!tile || tile.type !== table.tileType) return;
+
+    const roll = rollEncounter(table);
     if (!roll) return;
 
     const accountId = this.accountIds.get(client.sessionId);

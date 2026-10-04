@@ -21,6 +21,8 @@ export interface SessionRecord {
   currency: number;
   /** Badge ids earned from defeating NPC trainers (Milestone 6). */
   badges: string[];
+  /** Murk Crew questline progress (Milestone 7): 0=not started, 1=path cleared, 2=lure returned, 3=complete. */
+  questStage: number;
 }
 
 /**
@@ -69,6 +71,7 @@ export async function loadSession(
         inventory: createStarterInventory(),
         currency: STARTER_CURRENCY,
         badges: [],
+        questStage: 0,
       };
 
   cache.set(accountId, record);
@@ -170,6 +173,30 @@ export function awardBadge(accountId: string, badgeId: string, store: Persistenc
   });
 
   return record.badges;
+}
+
+/** Returns this account's current Murk Crew questline stage (Milestone 7). */
+export function getQuestStage(accountId: string): number {
+  return cache.get(accountId)?.questStage ?? 0;
+}
+
+/**
+ * Advances the cached quest stage to `stage` if it is a forward move
+ * (never regresses an already-reached stage, so e.g. a stray duplicate
+ * "grunt defeated" event can't roll progress backward) and write-throughs
+ * to the store. Returns the resulting stage either way.
+ */
+export function advanceQuestStage(accountId: string, stage: number, store: PersistenceStore): number {
+  const record = cache.get(accountId);
+  if (!record) return 0;
+  if (stage > record.questStage) {
+    record.questStage = stage;
+    void store.saveQuestStage(accountId, stage).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error(`[sessionCache] failed to persist quest stage for ${accountId}:`, err);
+    });
+  }
+  return record.questStage;
 }
 
 /** Awaited, synchronous flush of the cached record to the store — used when a player fully disconnects. */

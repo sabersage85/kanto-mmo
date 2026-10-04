@@ -1,0 +1,28 @@
+{
+  "id": "cinderfell",
+  "name": "Cinderfell Town",
+  "width": 15,
+  "height": 11,
+  "tileSize": 32,
+  "spawn": { "x": 1, "y": 5 },
+  "legend": {
+    ".": "grass",
+    "#": "tree",
+    "p": "path"
+  },
+  "rows": [
+    "###############",
+    "#ppppppppppppp#",
+    "#ppppppppppppp#",
+    "#ppppppppppppp#",
+    "#ppppppppppppp#",
+    "ppppppppppppppp",
+    "#ppppppppppppp#",
+    "#ppppppppppppp#",
+    "#ppppppppppppp#",
+    "#ppppppppppppp#",
+    "###############"
+  ],
+  "warps": [{ "x": 0, "y": 5, "targetMapId": "tidemoor", "targetX": 13, "targetY": 5 }],
+  "npcs": [{ "id": "cinderfell-smith", "name": "Smith Orra", "kind": "flavor", "position": { "x": 3, "y": 3 } }]
+}

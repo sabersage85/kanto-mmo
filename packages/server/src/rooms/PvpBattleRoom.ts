@@ -112,7 +112,7 @@ export class PvpBattleRoom extends Room<PvpBattleState> {
 
     const store = getPersistenceStore();
     await loadSession(store, auth.accountId, side === 'challenger' ? this.expected.challengerName : this.expected.opponentName, {
-      mapId: 'route1',
+      mapId: 'hearthfield',
       x: 0,
       y: 0,
       direction: 'down',

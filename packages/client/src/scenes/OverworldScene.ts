@@ -12,6 +12,8 @@ import {
 import { hideShopOverlay, showShopOverlay, updateShopCurrency } from '../ui/shopOverlay.js';
 import { hideTradeRequestOverlay, showTradeRequestOverlay } from '../ui/tradeRequestOverlay.js';
 import { hideTradePanel, showTradePanel, showTradeResultBanner, updateTradePanelState } from '../ui/tradePanel.js';
+import { hideDialogue, showDialogue } from '../ui/dialogueBox.js';
+import { hideQuestLog, isQuestLogOpen, showQuestLog, updateQuestLog } from '../ui/questLog.js';
 
 /** Placeholder colors standing in for real tile art (no copied assets). */
 const TILE_COLORS: Record<string, number> = {
@@ -135,6 +137,7 @@ interface TrainerInfo {
   id: string;
   name: string;
   themeType: string;
+  kind: 'gym' | 'rival' | 'grunt';
   position: { x: number; y: number };
   badgeName: string;
   defeated: boolean;
@@ -147,6 +150,37 @@ interface TrainersInfoMessage {
 interface TrainerBattleStartMessage {
   token: string;
   trainerId: string;
+  greeting?: string;
+}
+
+interface NpcInfo {
+  id: string;
+  name: string;
+  kind: 'flavor' | 'quest';
+  position: { x: number; y: number };
+}
+
+interface NpcsInfoMessage {
+  npcs: NpcInfo[];
+}
+
+interface NpcDialogueMessage {
+  npcId: string;
+  name: string;
+  lines: string[];
+}
+
+interface QuestUpdateMessage {
+  stage: number;
+  title: string;
+  description: string;
+}
+
+interface WarpMessage {
+  mapId: string;
+  x: number;
+  y: number;
+  direction: string;
 }
 
 /** Distinct placeholder shape colors per trainer theme type (no copied assets). */
@@ -155,7 +189,14 @@ const TRAINER_THEME_COLORS: Record<string, number> = {
   Water: 0x2a9fd6,
   Fire: 0xe0552b,
 };
+/** Rival/grunt trainers (Milestone 7) are colored by their narrative role rather than battle theme type. */
+const TRAINER_KIND_COLORS: Partial<Record<TrainerInfo['kind'], number>> = {
+  rival: 0x2ecc71,
+  grunt: 0x4a3a5a,
+};
 const TRAINER_DEFEATED_COLOR = 0x555555;
+const NPC_FLAVOR_COLOR = 0x999999;
+const NPC_QUEST_COLOR = 0xffd166;
 
 /** Data passed back in when resuming this scene after a battle ends, or in on first boot from main.ts. */
 interface OverworldResumeData {
@@ -164,6 +205,10 @@ interface OverworldResumeData {
   /** Present on first boot (from main.ts) and when resuming after a battle; absent only if something went wrong. */
   sessionToken?: string;
   name?: string;
+  /** First-boot only: which map's room to join (resolved via `/players/me/map`). */
+  mapId?: string;
+  /** Set when transitioning via a warp (a brand-new room/map, as opposed to resuming the same room after a battle) so trainer/NPC caches get cleared instead of carried over from the previous map. */
+  isNewMap?: boolean;
 }
 
 export class OverworldScene extends Phaser.Scene {
@@ -188,10 +233,13 @@ export class OverworldScene extends Phaser.Scene {
   private party: CreatureInstance[] = [];
   private storage: CreatureInstance[] = [];
   private inventoryKey!: Phaser.Input.Keyboard.Key;
+  private questKey!: Phaser.Input.Keyboard.Key;
   /** Tracks which side of the active trade we are, so incoming `tradeUpdate` broadcasts can be mapped to "mine"/"theirs". */
   private activeTradeIsSideA = false;
   private trainerVisuals = new Map<string, PlayerVisual>();
   private trainerInfoById = new Map<string, TrainerInfo>();
+  private npcVisuals = new Map<string, PlayerVisual>();
+  private npcInfoById = new Map<string, NpcInfo>();
   private badgeText!: Phaser.GameObjects.Text;
 
 
@@ -206,7 +254,19 @@ export class OverworldScene extends Phaser.Scene {
   async create(): Promise<void> {
     this.playerVisuals = new Map();
     this.trainerVisuals = new Map();
-    this.sessionToken = this.resumeData.sessionToken ?? '';
+    this.npcVisuals = new Map();
+    this.sessionToken = this.resumeData.sessionToken ?? this.sessionToken;
+
+    // A brand-new room (first boot, or just warped to a different map's
+    // OverworldRoom instance) means the previous map's trainer/NPC caches
+    // are stale and must be cleared — they get freshly repopulated by the
+    // new room's `trainersInfo`/`npcsInfo` messages below. Resuming the
+    // *same* room after a battle (no `isNewMap` flag) keeps them as-is,
+    // since the server won't resend them on a mere scene restart.
+    if (!this.resumeData.room || this.resumeData.isNewMap) {
+      this.trainerInfoById.clear();
+      this.npcInfoById.clear();
+    }
 
     if (this.resumeData.room && this.resumeData.map) {
       this.room = this.resumeData.room;
@@ -222,9 +282,10 @@ export class OverworldScene extends Phaser.Scene {
         return;
       }
 
-      this.map = (await fetchMap('route1')) as MapDefinition;
+      const mapId = this.resumeData.mapId ?? 'hearthfield';
+      this.map = (await fetchMap(mapId)) as MapDefinition;
       try {
-        this.room = await joinOverworld(this.sessionToken);
+        this.room = await joinOverworld(this.sessionToken, mapId);
       } catch (err) {
         this.handleAuthFailure(err instanceof Error ? err.message : 'Failed to connect.');
         return;
@@ -246,10 +307,12 @@ export class OverworldScene extends Phaser.Scene {
       fontSize: '12px',
     });
 
-    // (Re)create trainer NPC visuals every time this scene is (re)created,
-    // mirroring player visuals, since this.trainerInfoById already holds
-    // the latest `trainersInfo` snapshot across a battle round-trip.
+    // (Re)create trainer/NPC visuals every time this scene is (re)created,
+    // mirroring player visuals, since this.trainerInfoById/npcInfoById
+    // already hold the latest snapshot across a battle round-trip (cleared
+    // above only on an actual map change).
     this.trainerInfoById.forEach((trainer) => this.registerTrainerVisual(trainer));
+    this.npcInfoById.forEach((npc) => this.registerNpcVisual(npc));
 
     // (Re)create a visual for every player already known to the room,
     // since Phaser destroys this scene's game objects whenever we leave
@@ -279,6 +342,7 @@ export class OverworldScene extends Phaser.Scene {
         hideInventoryPanel();
         hideShopOverlay();
         hideTradePanel();
+        hideDialogue();
         this.scene.start('battle', {
           encounterToken: message.token,
           sessionToken: this.sessionToken,
@@ -304,6 +368,7 @@ export class OverworldScene extends Phaser.Scene {
 
       this.room.onMessage('pvpBattleStart', (message: PvpBattleStartMessage) => {
         hideChallengeOverlay();
+        hideDialogue();
         this.scene.start('pvpBattle', {
           roomId: message.roomId,
           opponentName: message.opponentName,
@@ -320,10 +385,31 @@ export class OverworldScene extends Phaser.Scene {
         }
       });
 
+      this.room.onMessage('npcsInfo', (message: NpcsInfoMessage) => {
+        for (const npc of message.npcs) {
+          this.npcInfoById.set(npc.id, npc);
+          this.registerNpcVisual(npc);
+        }
+      });
+
+      this.room.onMessage('npcDialogue', (message: NpcDialogueMessage) => {
+        showDialogue(message.name, message.lines);
+      });
+
+      this.room.onMessage('questUpdate', (message: QuestUpdateMessage) => {
+        updateQuestLog(message.stage, message.title, message.description);
+      });
+
+      this.room.onMessage('warp', (message: WarpMessage) => {
+        void this.handleWarp(message);
+      });
+
       this.room.onMessage('trainerBattleStart', (message: TrainerBattleStartMessage) => {
         hideInventoryPanel();
         hideShopOverlay();
         hideTradePanel();
+        hideDialogue();
+        if (message.greeting) this.showTransientMessage(message.greeting);
         this.scene.start('trainerBattle', {
           trainerBattleToken: message.token,
           sessionToken: this.sessionToken,
@@ -437,9 +523,11 @@ export class OverworldScene extends Phaser.Scene {
       };
       this.inventoryKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.I);
       this.inventoryKey.on('down', () => this.toggleInventoryPanel());
+      this.questKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
+      this.questKey.on('down', () => this.toggleQuestLog());
     }
 
-    this.add.text(16, 332, '[I] Inventory', { color: '#888888', fontFamily: 'monospace', fontSize: '11px' });
+    this.add.text(16, 332, '[I] Inventory · [Q] Quest Log', { color: '#888888', fontFamily: 'monospace', fontSize: '11px' });
     this.add.text(16, 346, 'Click: challenge · Shift+Click: trade', {
       color: '#888888',
       fontFamily: 'monospace',
@@ -458,6 +546,39 @@ export class OverworldScene extends Phaser.Scene {
         this.room.send('useItem', { itemId, instanceId });
       },
     );
+  }
+
+  private toggleQuestLog(): void {
+    if (isQuestLogOpen()) {
+      hideQuestLog();
+      return;
+    }
+    showQuestLog();
+  }
+
+  /**
+   * Resolves and switches into the destination map's OverworldRoom after
+   * a server-driven warp. Joins the new room before leaving the old one
+   * so a failed join doesn't strand the player with no room at all.
+   */
+  private async handleWarp(message: WarpMessage): Promise<void> {
+    hideDialogue();
+    const previousRoom = this.room;
+    try {
+      const newMap = (await fetchMap(message.mapId)) as MapDefinition;
+      const newRoom = await joinOverworld(this.sessionToken, message.mapId);
+      previousRoom.leave();
+      this.listenersAttached = false;
+      this.scene.start('overworld', {
+        room: newRoom,
+        map: newMap,
+        sessionToken: this.sessionToken,
+        name: this.resumeData.name,
+        isNewMap: true,
+      });
+    } catch {
+      this.showTransientMessage('Failed to travel to the new area.');
+    }
   }
 
   update(time: number): void {
@@ -545,7 +666,7 @@ export class OverworldScene extends Phaser.Scene {
     }
   }
 
-  /** Draws/refreshes one NPC trainer's placeholder shape (diamond, themed color) and label; grays out once defeated. */
+  /** Draws/refreshes one NPC trainer's placeholder shape (diamond, themed/kind color) and label; grays out once defeated. */
   private registerTrainerVisual(trainer: TrainerInfo): void {
     const existing = this.trainerVisuals.get(trainer.id);
     if (existing) {
@@ -555,7 +676,9 @@ export class OverworldScene extends Phaser.Scene {
 
     const { tileSize } = this.map;
     const { x, y } = this.tileToWorld(trainer.position.x, trainer.position.y);
-    const color = trainer.defeated ? TRAINER_DEFEATED_COLOR : TRAINER_THEME_COLORS[trainer.themeType] ?? 0xffffff;
+    const color = trainer.defeated
+      ? TRAINER_DEFEATED_COLOR
+      : TRAINER_KIND_COLORS[trainer.kind] ?? TRAINER_THEME_COLORS[trainer.themeType] ?? 0xffffff;
     const rect = this.add
       .rectangle(x, y, tileSize * 0.8, tileSize * 0.8, color)
       .setAngle(45)
@@ -569,6 +692,25 @@ export class OverworldScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.trainerVisuals.set(trainer.id, { rect, label });
+  }
+
+  /** Draws/refreshes one flavor/quest NPC's placeholder shape (small square, gold if quest-bearing) and label. */
+  private registerNpcVisual(npc: NpcInfo): void {
+    const existing = this.npcVisuals.get(npc.id);
+    if (existing) {
+      existing.rect.destroy();
+      existing.label.destroy();
+    }
+
+    const { tileSize } = this.map;
+    const { x, y } = this.tileToWorld(npc.position.x, npc.position.y);
+    const color = npc.kind === 'quest' ? NPC_QUEST_COLOR : NPC_FLAVOR_COLOR;
+    const rect = this.add.rectangle(x, y, tileSize * 0.6, tileSize * 0.6, color).setStrokeStyle(2, 0x000000);
+    const label = this.add
+      .text(x, y - 22, npc.name, { color: '#ffffff', fontSize: '9px', fontFamily: 'monospace' })
+      .setOrigin(0.5);
+
+    this.npcVisuals.set(npc.id, { rect, label });
   }
 
   /** Brief on-screen notice for challenge errors/declines — auto-clears after a couple seconds. */

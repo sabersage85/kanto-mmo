@@ -10,3 +10,4 @@ export * from './encounter.js';
 export * from './items.js';
 export * from './inventory.js';
 export * from './trade.js';
+export * from './quest.js';

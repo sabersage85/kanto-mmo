@@ -100,7 +100,7 @@ export class BattleRoom extends Room<BattleState> {
     // somehow not (shouldn't normally happen since OverworldRoom loads the
     // session on join, before any encounter can be rolled).
     await loadSession(getPersistenceStore(), accountId, 'Trainer', {
-      mapId: 'route1',
+      mapId: 'hearthfield',
       x: 0,
       y: 0,
       direction: 'down',

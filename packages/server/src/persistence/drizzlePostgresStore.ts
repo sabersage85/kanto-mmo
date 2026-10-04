@@ -90,6 +90,7 @@ export class DrizzlePostgresStore implements PersistenceStore {
       inventory: starterInventory,
       currency: starterCurrency,
       badges: [],
+      questStage: 0,
     };
   }
 
@@ -138,6 +139,7 @@ export class DrizzlePostgresStore implements PersistenceStore {
       inventory,
       currency: playerRow.currency,
       badges,
+      questStage: playerRow.questStage,
     };
   }
 
@@ -209,6 +211,10 @@ export class DrizzlePostgresStore implements PersistenceStore {
       .from(defeatedTrainers)
       .where(eq(defeatedTrainers.accountId, accountId));
     return rows.map((row) => row.trainerBadgeId);
+  }
+
+  async saveQuestStage(accountId: string, questStage: number): Promise<void> {
+    await this.db.update(players).set({ questStage, updatedAt: new Date() }).where(eq(players.accountId, accountId));
   }
 
   private async insertInventory(accountId: string, inventory: InventorySlot[]): Promise<void> {

@@ -1,0 +1,34 @@
+{
+  "id": "hearthfield",
+  "name": "Hearthfield Town",
+  "width": 15,
+  "height": 11,
+  "tileSize": 32,
+  "spawn": { "x": 7, "y": 2 },
+  "legend": {
+    ".": "grass",
+    "#": "tree",
+    "~": "water",
+    "p": "path",
+    "s": "shop"
+  },
+  "rows": [
+    "###############",
+    "#.............#",
+    "#..pppppppppp.#",
+    "#..p.......p..#",
+    "#..p.~~~~~.p..#",
+    "#..p.~~~~~.p..p",
+    "#..p.~~~~~.p..#",
+    "#..p.......p..#",
+    "#..ppppsppppp.#",
+    "#.............#",
+    "###############"
+  ],
+  "warps": [{ "x": 14, "y": 5, "targetMapId": "fernway", "targetX": 1, "targetY": 5 }],
+  "npcs": [
+    { "id": "hearthfield-elder", "name": "Elder Rowe", "kind": "flavor", "position": { "x": 2, "y": 9 } },
+    { "id": "hearthfield-dockhand", "name": "Dockhand Finch", "kind": "flavor", "position": { "x": 12, "y": 9 } },
+    { "id": "quest-board", "name": "Notice Board", "kind": "quest", "position": { "x": 7, "y": 1 } }
+  ]
+}

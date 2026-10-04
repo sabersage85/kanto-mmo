@@ -71,9 +71,19 @@ export async function login(email: string, password: string): Promise<StoredSess
   return storeSession(result);
 }
 
-/** Joins (or, on first connection, creates) the shared overworld room, authenticated by session token. */
-export async function joinOverworld(sessionToken: string): Promise<Room> {
-  return colyseusClient.joinOrCreate('overworld', { token: sessionToken });
+/** Joins (or, on first connection, creates) the overworld room for the given map, authenticated by session token. */
+export async function joinOverworld(sessionToken: string, mapId: string): Promise<Room> {
+  return colyseusClient.joinOrCreate('overworld', { token: sessionToken, mapId });
+}
+
+/** Resolves which map the player should join first (their last known position, or the starting town for new accounts). */
+export async function fetchInitialMapId(sessionToken: string): Promise<string> {
+  const res = await fetch(`${SERVER_HTTP_URL}/players/me/map`, {
+    headers: { Authorization: `Bearer ${sessionToken}` },
+  });
+  if (!res.ok) throw new Error('Failed to resolve starting map.');
+  const data = (await res.json()) as { mapId: string };
+  return data.mapId;
 }
 
 /** Creates a fresh, private 1-player battle room for a server-issued single-use encounter token. */

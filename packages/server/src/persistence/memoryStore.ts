@@ -75,6 +75,7 @@ export class InMemoryPersistenceStore implements PersistenceStore {
       inventory: starterInventory,
       currency: starterCurrency,
       badges: [],
+      questStage: 0,
     };
     this.players.set(accountId, player);
     return player;
@@ -132,5 +133,11 @@ export class InMemoryPersistenceStore implements PersistenceStore {
       player.badges = [...player.badges, badgeId];
     }
     return player.badges;
+  }
+
+  async saveQuestStage(accountId: string, questStage: number): Promise<void> {
+    const player = this.players.get(accountId);
+    if (!player) return;
+    player.questStage = questStage;
   }
 }

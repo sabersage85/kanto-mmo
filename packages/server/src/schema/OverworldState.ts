@@ -15,6 +15,6 @@ export class PlayerSchema extends Schema {
 
 /** Root networked state for an OverworldRoom. */
 export class OverworldState extends Schema {
-  @type('string') mapId = 'route1';
+  @type('string') mapId = 'hearthfield';
   @type({ map: PlayerSchema }) players = new MapSchema<PlayerSchema>();
 }

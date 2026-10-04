@@ -1,0 +1,31 @@
+{
+  "id": "fernway",
+  "name": "Fernway Wood",
+  "width": 15,
+  "height": 11,
+  "tileSize": 32,
+  "spawn": { "x": 1, "y": 5 },
+  "legend": {
+    ".": "grass",
+    "#": "tree",
+    "p": "path"
+  },
+  "rows": [
+    "###############",
+    "#.............#",
+    "#.............#",
+    "#.............#",
+    "#.............#",
+    "ppppppppppppppp",
+    "#.............#",
+    "#.............#",
+    "#.............#",
+    "#.............#",
+    "###############"
+  ],
+  "warps": [
+    { "x": 0, "y": 5, "targetMapId": "hearthfield", "targetX": 13, "targetY": 5 },
+    { "x": 14, "y": 5, "targetMapId": "stonehollow", "targetX": 1, "targetY": 5 }
+  ],
+  "npcs": []
+}

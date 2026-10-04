@@ -22,6 +22,7 @@ import { validateToken } from '../auth/authService.js';
 import { getPersistenceStore } from '../persistence/store.js';
 import { consumePendingTrainerBattle } from '../pendingTrainerBattles.js';
 import { getTrainer } from '../data/trainers.js';
+import { maybeAdvanceQuestOnBadge } from '../quest.js';
 import {
   awardBadge,
   getFirstAliveInstance,
@@ -73,6 +74,7 @@ export class TrainerBattleRoom extends Room<TrainerBattleState> {
   private engine!: TrainerBattleEngine;
   private badgeId = '';
   private badgeName = '';
+  private defeatLine?: string;
 
   private totalExpGained = 0;
   private anyLeveledUp = false;
@@ -109,7 +111,7 @@ export class TrainerBattleRoom extends Room<TrainerBattleState> {
     const trainer = getTrainer(pending.trainerId);
 
     await loadSession(getPersistenceStore(), accountId, 'Trainer', {
-      mapId: 'route1',
+      mapId: 'hearthfield',
       x: 0,
       y: 0,
       direction: 'down',
@@ -127,6 +129,7 @@ export class TrainerBattleRoom extends Room<TrainerBattleState> {
     this.accountId = accountId;
     this.badgeId = trainer.badgeId;
     this.badgeName = trainer.badgeName;
+    this.defeatLine = trainer.defeatLine;
     this.partyInstance = partyInstance;
     this.playerSpecies = getSpecies(partyInstance.speciesId);
     this.latestLevel = partyInstance.level;
@@ -146,7 +149,7 @@ export class TrainerBattleRoom extends Room<TrainerBattleState> {
     this.syncCreature(state.trainer, this.engine.activeTrainerCreature);
     this.setState(state);
 
-    this.pushLog(`${trainer.name} wants to battle!`);
+    this.pushLog(trainer.greeting ?? `${trainer.name} wants to battle!`);
     this.pushLog(`${trainer.name} sent out ${this.engine.activeTrainerCreature.name}!`);
 
     this.onMessage('selectMove', (_client, message: { moveId: number }) => {
@@ -256,6 +259,8 @@ export class TrainerBattleRoom extends Room<TrainerBattleState> {
       this.state.badgeAwarded = badges.includes(this.badgeId);
       this.state.badgeName = this.badgeName;
       this.pushLog(`You defeated ${this.state.trainerName}! You earned the ${this.badgeName}!`);
+      if (this.defeatLine) this.pushLog(this.defeatLine);
+      maybeAdvanceQuestOnBadge(this.accountId, this.badgeId, badges, store);
     } else {
       // Same blackout convention as BattleRoom: auto-heal back to full rather than leaving
       // the party fainted, since trainer battles have no flee and items can't revive.

@@ -1,0 +1,1 @@
+ALTER TABLE "players" ADD COLUMN "quest_stage" integer DEFAULT 0 NOT NULL;

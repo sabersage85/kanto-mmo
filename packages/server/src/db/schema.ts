@@ -37,6 +37,8 @@ export const players = pgTable('players', {
   losses: integer('losses').notNull().default(0),
   /** In-game currency (Milestone 2), spent at the shop tile. */
   currency: integer('currency').notNull().default(300),
+  /** Murk Crew questline stage (Milestone 7): 0=not started, 1=path cleared, 2=lure returned, 3=complete. */
+  questStage: integer('quest_stage').notNull().default(0),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

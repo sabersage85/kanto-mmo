@@ -32,6 +32,8 @@ export interface PersistedPlayer {
   currency: number;
   /** Badge ids earned from defeating NPC trainers (Milestone 6). A trainer is never re-awarded once its badge is present here. */
   badges: string[];
+  /** Murk Crew questline progress (Milestone 7): 0=not started, 1=path cleared, 2=lure returned, 3=complete. */
+  questStage: number;
 }
 
 /**
@@ -86,4 +88,7 @@ export interface PersistenceStore {
    * the account's full, de-duplicated badge list afterward.
    */
   awardBadge(accountId: string, badgeId: string): Promise<string[]>;
+
+  /** Overwrites the account's Murk Crew questline stage (Milestone 7). */
+  saveQuestStage(accountId: string, questStage: number): Promise<void>;
 }
